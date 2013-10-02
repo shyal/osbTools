@@ -1,0 +1,22 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityDeleteHistory",
+					"GEO CHECK",
+					"Delete all history",
+					"This check deletes history on all nodes.",
+					"Perform"
+					);
+
+global proc osbSanityDeleteHistory()
+{
+	string $sl[] = getObjectsBasedOnPrefs();
+	for ($s in $sl)
+	{
+		if (objExists($s))
+		{
+		 	select $s;
+		 	DeleteHistory();
+		}
+	}
+	select -cl;
+}

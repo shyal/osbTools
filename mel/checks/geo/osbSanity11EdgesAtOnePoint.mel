@@ -1,0 +1,92 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanity11EdgesAtOnePoint",
+					"GEO CHECK",
+					"Vallence check: No more than 11 edges going into one point",
+					"This check makes sure there are no more than 11 edges meeting at\n\
+one single vertex.If there are more then the fix will remove every second edge.",
+					"Perform,Select,fix");
+
+global proc osbSanity11EdgesAtOnePoint()
+{
+	string $sl[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $sl)
+	{
+		int $n[] = polyEvaluate("-v", $s);
+		int $i;
+		for ($i = 0; $i < $n[0]; $i++)
+		{
+    		if (size(vertexToEdge($s, $i)) > 11)
+    		{
+        		select -add ($s+".vtx["+$i+"]");
+    		}
+		}
+	}
+}
+
+proc int getComponentNumber(string $obj)
+{
+	string $buffer[];
+	int $numTokens = `tokenize $obj "[" $buffer`;
+	$numTokens = `tokenize $buffer[1] "]" $buffer`;
+	int $face = $buffer[0];
+	return $face;
+}
+
+proc string getComponentObjName(string $obj)
+{
+	string $buffer[];
+	int $numTokens = `tokenize $obj "." $buffer`;
+	return $buffer[0];
+}
+
+proc string reconstructComponentName(string $shape, string $type, int $component)
+{
+	return $shape+"." + $type + "[" + $component + "]";
+}
+
+global proc int[] tokenizePolyInfo(string $info)
+{
+    string $tokens[];
+    tokenize $info " :\n\r" $tokens;
+    
+    int $order[];
+    clear $order;
+    int $t;
+    
+    for ( $t = 2; $t < `size $tokens`; $t++ )
+      $order[`size $order`] = $tokens[$t];
+    
+    return $order;
+}
+
+global proc int[] vertexToEdge(string $shape, int $vertex)
+{
+    string $fte[] = polyInfo("-vertexToEdge",$shape+".vtx["+$vertex+"]");
+    return (tokenizePolyInfo($fte[0]));
+}
+
+global proc osbSanity11EdgesAtOnePointFix()
+{
+	string $sl[] = ls("-sl","-fl");
+	string $delList[];
+	int $j = 0;
+	for ($s in $sl)
+	{
+		// get edges connected to this vertex
+
+		string $shape = getComponentObjName($s);
+		int $vertex = getComponentNumber($s);
+		int $edges[] = vertexToEdge($shape, $vertex);
+		int $i = 0;
+		for ($e in $edges)
+		{
+			// delete 1 out of every 2
+			if ($i % 2 == 0)
+				$delList[$j++] = reconstructComponentName($shape, "e", $e);
+			$i++;
+		}
+	}
+	delete $delList;
+}

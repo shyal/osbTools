@@ -1,0 +1,30 @@
+source "osbSanityCheckerAPI.mel";
+
+global string $fixCommand = "";
+
+global proc osbSanityHolesBorders()
+{
+	if (osbGetRunOnAllObjects())
+		select(ls("-exactType", "mesh"));
+    polySelectConstraint -m 3 -t 0x8000 -w 1;
+    polySelectConstraint -dis;
+	global string $fixCommand;
+	$fixCommand = holesBorder();
+	
+}
+
+global proc osbSanityHolesBordersFix()
+{
+	// holesBorder assumes that all border edges are already selected
+	// and will fix one border edge only.
+	global string $fixCommand;
+	print("fix command: "+$fixCommand+"\n");
+	eval($fixCommand);
+}
+
+osbAddSanityCheck(	"osbSanityHolesBorders", 	// name
+					"GEO CHECK", 				// category
+					"Add borders to holes",  	// description
+					"This check looks for open borders in polygon shells and adds an edge loop to their border.", // tooltip
+					"Perform,Select,fix"		// fix type
+					);

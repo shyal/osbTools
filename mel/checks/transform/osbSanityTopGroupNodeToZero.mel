@@ -1,0 +1,38 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityTopGroupNodeToZero",
+					"TRANSFORM CHECK",
+					"Place top group node pivot to world 0",
+					"This places the top level group node's pivot at world (0,0,0)\n\
+This check will not work if there is more than 1 top group transform.",
+					"Perform");
+					
+// Place top group node pivot to world 0
+global proc osbSanityTopGroupNodeToZero()
+{
+	// get all transforms that don't have any parents
+	
+	string $trans[] = ls("-exactType", "transform");
+	string $topLevel[];
+	for ($s in $trans)
+		if (size(getParents($s)) == 0 && ($s != "top" && $s != "side"  && $s != "front" && $s != "persp"))
+			$topLevel[size($topLevel)] = $s;
+		
+	// there can be only one
+	if (size($topLevel) > 1)
+	{
+		confirmDialog 
+			-title ("Top Level Nodes") 
+			-message ("Warning there is more than 1 top level node")  
+			-button "OK";
+	}
+	
+	if (size($topLevel) == 1)
+		move 0 0 0 ($topLevel[0]+".scalePivot") ($topLevel[0]+".rotatePivot");
+}
+
+global proc string[] getParents(string $obj)
+{
+	string $relatives[] = listRelatives("-parent", "-f", $obj);
+	return $relatives;
+}

@@ -1,0 +1,25 @@
+source "osbSanityCheckerAPI.mel";
+
+global proc osbSanityBorders()
+{
+	if (osbGetRunOnAllObjects())
+		select(ls("-exactType", "mesh"));
+    polySelectConstraint -m 3 -t 0x8000 -w 1;
+    polySelectConstraint -dis;
+}
+
+global proc osbSanityBordersFix()
+{
+	for ($s in ls("-sl"))
+	{
+    	polyCloseBorder -ch 1 $s;
+	}
+	select -cl;
+}
+
+osbAddSanityCheck(	"osbSanityBorders", 		// name
+					"GEO CHECK", 				// category
+					"Open edges/border edges",  // description
+					"This check looks for open borders in polygon shells and the fix closes them.", // tooltip
+					"Perform,Select,fix"		// fix type
+					);

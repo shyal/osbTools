@@ -1,0 +1,10 @@
+source "osbSanityCheckerAPI.mel";
+
+if (!pluginInfo("-q", "-loaded", "osbTools-1.0"))
+    loadPlugin "osbTools-1.0";
+	
+osbAddSanityCheck(	"osbNameClashes",
+					"NAMING CONVENSIONS",
+					"Check that not objects have the same name",
+					"This resolves name clashes for meshes in the scene.",
+					"Perform");

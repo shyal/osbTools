@@ -1,0 +1,301 @@
+// "I am rarely happier than when spending entire day programming my computer to 
+// perform automatically a task that it would otherwise take me a good ten seconds to do by hand." 
+// - Douglas Adams
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////HELPER FUNCTIONS//////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+global proc string determineSetContent(string $set)
+{
+    string $content[] = `sets -q $set`;
+    for ($c in $content)
+    {
+        if (
+                gmatch($c, "*.map*") ||
+                gmatch($c, "*.vtx*") ||
+                gmatch($c, "*.f*") ||
+                gmatch($c, "*.e*"))
+            return "component";
+    }
+    if (size($content) == 0)
+        return "empty";
+    return "object";
+}
+
+global proc int osbGetRunOnAllObjects()
+{
+	return menuItem("-q", "-checkBox", "osbRunOnAllGeoCB");
+}
+
+global proc string getMesh(string $obj)
+{
+    string $type = objectType($obj);
+    
+    if ($type == "mesh")
+        return $obj;
+    else if ($type == "transform")
+    {
+        string $shapes[] = listRelatives("-type", "mesh", $obj);
+        return $shapes[0];
+    }
+	error("Don't get here");
+}
+
+global proc string[] getMeshesFromSelection()
+{
+	string $sl[] = ls("-sl");
+	string $meshes[];
+	for ($s in $sl)
+		$meshes[size($meshes)] = getMesh($s);
+	return $meshes;
+}
+
+global proc string[] getObjectsBasedOnPrefs()
+{
+	string $sl[];
+	
+	if (osbGetRunOnAllObjects())
+		$sl = ls("-exactType", "mesh");
+	else
+		$sl = getMeshesFromSelection();
+	return $sl;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////UI BUILDING/////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+proc createCheckItem(string $name, string $text, string $help, int $enable)
+{
+	rowLayout -numberOfColumns 2 -columnWidth 1 400 ($name+"Layout");
+	checkBox -annotation $help -enable $enable -label $text ($name+"CB");
+	button -label "perform" -enable $enable   -c $name ($name+"PerformButton");
+	setParent ..;
+}
+
+proc createGeoCheckItem(string $name, string $text, string $help, int $enable)
+{
+	int $setHasObjs = objExists($name+"_set")  && sets("-q", "-size", $name+"_set") != 0;
+	rowLayout -numberOfColumns 4 -columnWidth 1 400 ($name+"Layout");
+	checkBox -annotation $help -enable $enable -label $text ($name+"CB");
+	button("-label", "check", "-enable", $enable, "-c", ("performPolyChecksCallback(\""+$name+"\")"), ($name+"PerformButton"));
+	button("-label", "select", "-enable", ($enable && $setHasObjs), "-c", ("selectCheckedItems(\""+$name+"\");"), ($name+"SelectButton"));
+	if (exists($name + "Fix"))
+		button("-label", "fix",	"-enable", ($enable && $setHasObjs), "-c", "performPolyFixsCallback(\""+$name+"\")", ($name+"FixButton"));
+	setParent ..;
+}
+
+// Sorry about these global vars, really couldn't find another way.
+global string $osbSanityChecks[];
+global string $osbSanityCategories[];
+global string $osbSanityDescriptions[];
+global string $osbSanityHelp[];
+global string $osbSanityTypes[];
+
+clear $osbSanityChecks;
+clear $osbSanityCategories;
+clear $osbSanityDescriptions;
+clear $osbSanityHelp;
+clear $osbSanityTypes;
+
+global proc osbAddSanityCheck(string $name, string $category, string $description, string $help, string $type)
+{
+	global string $osbSanityChecks[];
+	global string $osbSanityDescriptions[];
+	global string $osbSanityHelp[];
+	global string $osbSanityCategories[];
+	global string $osbSanityTypes[];
+
+	$osbSanityChecks[size($osbSanityChecks)] = $name;
+	$osbSanityDescriptions[size($osbSanityDescriptions)] = $description;
+	$osbSanityHelp[size($osbSanityHelp)] = $help == "" ? $description : $help;
+	$osbSanityCategories[size($osbSanityCategories)] = $category;
+	$osbSanityTypes[size($osbSanityTypes)] = $type;
+}
+
+// gets individual categories
+// ASSUMES CATEGORIES ARE SORTED
+proc string[] getIndividualCategories()
+{
+	global string $osbSanityCategories[];
+	string $cats[];
+	string $prev;
+	for ($c in $osbSanityCategories)
+	{
+		if  ($c != $prev)
+			$cats[size($cats)] = $c;
+		$prev = $c;
+	}
+	return $cats;
+}
+
+global proc osbSaveAsPreset()
+{
+	
+}
+
+global proc buildSanityCheckUI()
+{
+	global string $osbSanityChecks[];
+	global string $osbSanityDescriptions[];
+	global string $osbSanityCategories[];
+	global string $osbSanityTypes[];
+	global string $osbSanityHelp[];
+
+	string $window = "SanityChecking";
+
+	if (window("-exists", $window))
+    	deleteUI($window);
+
+	window("-title", "osb Sanity Checking Tool", "-resizeToFitChildren", 1, "-menuBar", true, $window);
+
+	int $height = 1;
+
+	menu -label "Edit" -tearOff true;
+    	menuItem -label "Hide Checked Items" -c "osbHideCheckedItemsCallback()";
+    	menuItem -label "Reset" -c "osbResetCallback()";
+		
+		int $osbRunOnAllGeo = optionVar("-ex", "osbRunOnAllGeo") == false || optionVar("-q", "osbRunOnAllGeo");
+		
+    	menuItem -checkBox $osbRunOnAllGeo -label "Run on all geometry" -c "osbRunOnAllGeoCallback()" "osbRunOnAllGeoCB" ;
+
+	menu -label "Help" -tearOff true;
+    	menuItem -label "Documentation" -c "osbSanityHelp()";
+
+    scrollLayout -childResizable true osbSanityMainScrollLayout;
+    columnLayout -adjustableColumn true osbSanityMainColLayout;
+	int $hasCheck = false;
+	for ($i = 0; $i < size($osbSanityChecks); $i++)
+	{
+		string $category = substituteAllString($osbSanityCategories[$i]," ", "_");
+
+		int $showOption = optionVar("-ex", $osbSanityChecks[$i]) == false || optionVar("-q", $osbSanityChecks[$i]);
+
+		if ($showOption)
+		{
+			// If the category does not yet exist
+			if (columnLayout("-q", "-ex", ($category+"cl")) == 0)
+			{
+				// Create it
+				setParent osbSanityMainColLayout;
+	            frameLayout -label $osbSanityCategories[$i] -borderStyle "etchedIn" $category;
+                columnLayout($category+"cl");
+				$height += 21;
+			}
+			// Else set it as current layout
+			else
+			{
+				setParent ($category+"cl");
+			}
+
+			$height += 26;
+
+			if ($osbSanityTypes[$i] == "Perform,Select,fix")
+				createGeoCheckItem($osbSanityChecks[$i], $osbSanityDescriptions[$i], $osbSanityHelp[$i], 1);
+			else
+				createCheckItem($osbSanityChecks[$i], $osbSanityDescriptions[$i], $osbSanityHelp[$i], 1);
+		}
+	}
+	setParent osbSanityMainScrollLayout;
+    button -label "perform" -command "osbSanityCheck";
+	$height += 70;
+
+	showWindow($window);
+
+	window("-edit", "-height", $height, $window);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////CALLBACKS//////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+global proc osbRunOnAllGeoCallback()
+{
+	int $cb = menuItem("-q", "-checkBox", "osbRunOnAllGeoCB");
+	optionVar("-iv", "osbRunOnAllGeo", $cb);
+}
+
+global proc osbSanityHelp()
+{
+	system("/opt/google/chrome/google-chrome --auth-server-whitelist=\"*\" \"http://vfxwiki/index.php/OsbTools\" > /dev/null & disown");
+	print "Opened help in Chrome\n";
+}
+
+global proc osbResetCallback()
+{
+	global string $osbSanityChecks[];
+	for ($s in $osbSanityChecks)
+		optionVar("-iv", $s, 1);
+	evalDeferred("buildSanityCheckUI()");
+}
+
+global proc osbHideCheckedItemsCallback()
+{
+	global string $osbSanityChecks[];
+	for ($s in $osbSanityChecks)
+		if (checkBox("-q", "-exists", $s+"CB") && checkBox("-q", "-value", $s+"CB"))
+			optionVar("-iv", $s, 0);
+	evalDeferred("buildSanityCheckUI()");
+}
+
+global proc performPolyChecksCallback(string $name)
+{
+	string $sl[] = ls("-sl");
+	
+	// perform the check
+	eval($name+"();");
+	// store into a set
+	
+	string $setName = $name+"_set";
+	
+	if (objExists($setName) == 1)
+		delete $setName;
+
+	if (size(ls("-sl")) != 0)
+		sets -text $setName -name $setName;
+	
+	button("-e", "-enable", objExists($setName) && sets("-q", "-size", $setName) != 0, ($name+"SelectButton"));
+	if (exists($name + "Fix"))
+		button("-e", "-enable", objExists($setName) && sets("-q", "-size", $setName) != 0 && exists($name + "Fix"), ($name+"FixButton"));
+	
+	select -cl;
+	changeSelectMode -object;
+	select $sl;
+}
+
+global proc performPolyFixsCallback(string $name)
+{
+	eval($name+"Fix");
+	print ("Performing fix " + $name+"Fix");
+}
+
+global proc selectCheckedItems(string $name)
+{
+	string $set = ($name + "_set");
+
+	string $type = determineSetContent($set);
+
+	if ($type != "empty")
+	{
+		if ($type == "component")
+		{
+			changeSelectMode -component;
+			string $nodes[] = sets("-q", "-nodesOnly", $set);
+			for ($n in $nodes)
+			{
+				hilite $n;
+			}
+		}
+		select($set);
+	}
+}
+
+global proc osbSanityCheck()
+{
+	global string $osbSanityChecks[];
+
+	for ($c in $osbSanityChecks)
+	    if (checkBox("-q", "-value", $c) == 1)
+    	    performPolyChecksCallback($c);
+}

@@ -1,0 +1,32 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityNormals",
+					"GEO CHECK",
+					"Check polygon normals facing the right direction",
+					"This checks whether the normals for the object are facing 'outwards'.\n\
+It uses a combination of two statistical methods to do so, and selects \n\
+the method with the highest level of confidence. Please note that this\n\
+check assumes that normals are conformed before running.",
+					"Perform,Select,fix");
+
+global proc osbSanityNormals()
+{
+	string $meshes[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $meshes)
+	{
+		print("checkNormalDirection + " + $s + "\n");
+		if (!objExists($s))
+			error($s + "does not exist\n");	
+	    	string $dir = checkNormalDirection($s, 500);
+    		if ($dir == "inwards")
+       		 	select -add $s;
+	}
+}
+
+global proc osbSanityNormalsFix()
+{
+	string $ls[] = ls("-sl");
+	for ($s in $ls)
+		polyNormal -normalMode 0 -userNormalMode 0 -ch 1 $s;
+}

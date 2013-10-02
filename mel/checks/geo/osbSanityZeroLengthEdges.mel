@@ -1,0 +1,18 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityZeroLengthEdges",
+					"GEO CHECK",
+					"Floating vertex/zero edge length",
+					"This checks for edges whose two vertices\n\
+are less than 1e-05 units apart.",
+					"Perform,Select,fix");
+
+global proc osbSanityZeroLengthEdges()
+{
+    polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"2","1","0","0","0","0","0","0","1e-05","1","0","0","1e-05","0","-1","0" };
+}
+
+global proc osbSanityZeroLengthEdgesFix()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"1","1","0","0","0","0","0","0","1e-05","1","1e-05","0","1e-05","0","-1","0" };
+}

@@ -1,0 +1,32 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityNonManifoldFaces",
+					"GEO CHECK",
+					"No non manifold faces",
+					"Nonmanifold Geometry is simply put a Mesh that could not exist in the real world. \n\
+Nonmanifold Geometry can be a real pain in the butt \n\
+as Maya refuses to convert to Subdivisions, Booleans won't work and smooth \n\
+operations can lead to strange results. There are three different types of nonmanifold \n\
+Geometry (actually four since lamina faces are technically also nonmanifold):\n\
+-	Three or more faces share the same edge on an object\n\
+-	Two or more faces share the same vertex, yet they share no edge\n\
+-	Two or more adjacent faces have opposite normal directions\n\
+Again, you should not let Maya do the work for you, but clean they geometry up yourself. Opposite normal \n\
+directions are easily spotted by turning on Display->Polygons->Face Normals. Simply select the faces and \n\
+use Normals->Reverse Normals or use Normals->Conform when dealing with a lot of inverse normals. \n\
+When dealing with faces that share the same vertex you have to decide for yourself whether you want to \n\
+split up the faces into separate objects or if you want to use 'Append to Polygon Tool' to \n\
+connect the edges. Three or more faces that share the same edge can be a bit tricky. The best advice I \n\
+can give you is to take a close look at your object and visualize how this object should look in the real world. \n\
+Then delete the faces that should not be there.",
+					"Perform,Select,fix");
+
+global proc osbSanityNonManifoldFaces()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"2","1","0","0","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","2","0" };
+}
+
+global proc osbSanityNonManifoldFacesFix()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"1","1","0","0","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","2","0" };
+}

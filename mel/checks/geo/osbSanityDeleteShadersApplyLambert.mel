@@ -1,0 +1,35 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityDeleteShadersApplyLambert",
+					"GEO CHECK",
+					"Delete shaders + assign lambert1 shader",
+					"This check deletes all shaders in the scene and\n\
+applies the default lambert material to all polygonal geometry",
+					"Perform");
+
+global proc osbSanityDeleteHistory()
+{
+	string $sl[] = getObjectsBasedOnPrefs();
+	
+	for ($s in $sl)
+	{
+		if (objExists($s))
+		{
+			select $s;
+			DeleteHistory();
+		}
+	}
+	select -cl;
+}
+
+// Delete shaders + assign lambert1 shader
+global proc osbSanityDeleteShadersApplyLambert()
+{
+	string $meshes[] = getObjectsBasedOnPrefs();
+
+	for ($s in $meshes)
+		assignSG lambert1 $s;
+	scOpt_performOneCleanup( { "shaderOption" } );
+	if( size(`getenv "MAYA_TESTING_CLEANUP"`) == 0 )
+		print "You can be rid of the warning dialog box can setting the MAYA_TESTING_CLEANUP environment variable to 1 e.g adding export MAYA_TESTING_CLEANUP=1; to your .bashrc file in linux\n";
+}

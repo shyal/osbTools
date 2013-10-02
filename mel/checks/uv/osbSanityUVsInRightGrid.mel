@@ -1,0 +1,24 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityUVsInRightGrid",
+					"UV CHECKING",
+					"Check no UVs are in -1 tiles in Y and X",
+					"Make sure UVs are only in the positive areas of the UV grid.",
+					"Perform,Select,fix");
+
+global proc osbSanityUVsInRightGrid()
+{
+	string $sl[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $sl)
+	{
+    	int $i;
+    	int $n[] = polyEvaluate("-uv", $s);
+    	for ($i = 0; $i < $n[0]; $i++)
+    	{
+        	float $p[] = polyEditUV("-q", $s+".map["+$i+"]");
+        	if ($p[0] < 0 || $p[1] < 0)
+            	select -add ($s+".map["+$i+"]");
+    	}
+	}
+}

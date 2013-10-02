@@ -1,0 +1,3027 @@
+// Copyright (C) 1997-2011 Autodesk, Inc., and/or its licensors.
+// All rights reserved.
+//
+// The coded instructions, statements, computer programs, and/or related
+// material (collectively the "Data") in these files contain unpublished
+// information proprietary to Autodesk, Inc. ("Autodesk") and/or its licensors,
+// which is protected by U.S. and Canadian federal copyright law and by
+// international treaties.
+//
+// The Data is provided for use exclusively by You. You have the right to use,
+// modify, and incorporate this Data into other products for purposes authorized 
+// by the Autodesk software license agreement, without fee.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. AUTODESK
+// DOES NOT MAKE AND HEREBY DISCLAIMS ANY EXPRESS OR IMPLIED WARRANTIES
+// INCLUDING, BUT NOT LIMITED TO, THE WARRANTIES OF NON-INFRINGEMENT,
+// MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, OR ARISING FROM A COURSE 
+// OF DEALING, USAGE, OR TRADE PRACTICE. IN NO EVENT WILL AUTODESK AND/OR ITS
+// LICENSORS BE LIABLE FOR ANY LOST REVENUES, DATA, OR PROFITS, OR SPECIAL,
+// DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES, EVEN IF AUTODESK AND/OR ITS
+// LICENSORS HAS BEEN ADVISED OF THE POSSIBILITY OR PROBABILITY OF SUCH DAMAGES.
+
+//
+//
+// Creation Date:  
+//
+//
+//  Procedure Name:
+//      cleanUpScene
+//
+//  Description:
+//      This procedure invokes the clean up scene operations.
+//		This operation is invoked from the "File->Optimize Scene Size"
+//		menu item.  It is also run when "maya -optimizeRender" is invoked.
+//
+//  Input Arguments:
+//
+//  Return Value:
+//      None.
+//
+//
+//	Notes:
+//
+//	For Maya 6.0, this file was modified quite a bit to add the following
+//	features:
+//
+//	1) Progress reporting and interruptability for each optimization step
+//	2) "Optimize Now" buttons next to each optimization checkbox to
+//	   allow users to execute one step quickly
+//	3) ability for users to hook their own custom optimization steps
+//	   into the dialog.
+//
+//	Here is an overview of how the contents of the file are broken
+//	down:
+//
+//	i) Procedures that implement specific cleanup operations:
+//
+//		- deleteEmptyGroups()
+//		- deleteEmptyLayers()
+//		- deleteUnusedExpressions()
+//		- deleteUnusedLocators()
+//		- deleteUnusedPairBlends()
+//		- deleteUnusedSets()
+//		- deleteUnusedCommon()/deleteUnusedCommonMulti()
+//		- deleteUnusedInUnusedHierarchy()/deleteUnusedInUnusedHierarchyMulti()
+//
+//		A number of external procedures are also used to implement cleanup
+//		operations, including:
+//
+//		- deleteUnusedTrax()
+//		- deleteUnusedDeformers()
+//		- deleteInvalidNurbs()
+//		- MLdeleteUnused()
+//		- removeDuplicateShadingNetworks()
+//		- RNdeleteUnused()
+//		- deleteUnusedBrushes()
+//	
+//
+//   ii) Procedures for running individual optimizations, via the
+//		"Optimize Now" buttons:
+//		
+//		- scOpt_setOptionVars()
+//		- scOpt_SaveAndCleanOptionVars()
+//		- scOpt_performOneCleanup()
+//		
+//  iii) Procedures to support user-defined optimization steps:
+//
+//		- userCleanUp_CleanUpSceneCallback()
+//		- userCleanUp_CleanUpSceneSetup()
+//		- userCleanUp_CreateUI()
+//		- userCleanUp_GetCommand()
+//		- userCleanUp_GetControlName()
+//		- userCleanUp_GetDefaultValue()
+//		- userCleanUp_GetLabel()
+//		- userCleanUp_GetNumCleanUps()
+//		- userCleanUp_GetOptionVarName()
+//		- userCleanUp_GetOptionVars()
+//		- userCleanUp_ListCleanUps()
+//		- userCleanUp_PerformCleanUpScene()
+//		- userCleanUp_SetOptionVars()
+//		
+//    iv) Procedures to set up the "Optimize Scene Size" UI:
+//    
+//    	- cleanUpOptions() - brings up the dialog
+//    	- cleanUpSceneTabUI() - builds the controls for the
+//    							individual optimizations
+//    	- cleanUpSceneSetup() - sets the state of the checkboxes
+//    							based on the stored optionVar values
+//    	- cleanUpSceneCallback() - sets the optionVar values
+//    							   based on the state of the checkboxes
+//    	- setOptionVars() - ensures that all optionVars have been set,
+//    						and optionally restores the factory default
+//    						settings
+//    						
+//	v) Procedures to actually do the cleanup:		
+//	
+//		- performCleanUpScene() 
+//			- invoked to perform the selected cleanup operations 
+//			  when the user presses the button from the dialog
+//		
+//		- performCleanUpSceneForEverything()
+//			- invoked when the user runs "maya -optimizeRender" on
+//			  a scene
+//		
+//
+//	How Progress Reporting/Interruptability Works
+//	---------------------------------------------
+//
+//	There are several functions that were added to give all the various
+//	optimization steps a common framework to use for reporting progress and
+//	recording their results:
+//
+//		cleanUp_ShouldReportProgress() - detemines whether or not
+//										 the various cleanup steps should
+//										 record their progress.  Since these
+//										 functions can be called outside the
+//										 context of the Optimize Scene Size
+//										 opteration, so they need to know when
+//										 they should use progress reporting.
+//
+//		cleanUp_StartProgress() - called before an operation begins
+//		cleanUp_SetProgress() - called as the operation is running, to 
+//								update the progress bar.
+//		cleanUp_EndProgress() - called to signal that the operation is 
+//								finished.
+//		cleanUp_CheckInterrupt() - called between cleanup operations to
+//								   detect when a previous operation has
+//								   been interrupted.
+//		cleanUp_Summary() - called to report the results of cleanup 
+//							operations.
+//
+//
+//
+//-----------------------------------------------------------------------------
+		
+
+global proc string[] listEmptyGroups( string $uiString ) 
+//
+//	Lists groups with no relatives or connections,
+//	and supplies them to the calling proc to
+//	do with as needed.
+//
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	string $obj;
+	string $unused[];
+	string $xforms[] = `ls -transforms -leaf`;
+
+	int $interrupted = 0;
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( size($xforms), $uiString, 1 );
+	}
+
+	// Get a list of all nodes which are associated with referenced nodes.
+	// We only want to remove an node if it is unused and not associated
+	// with a referenced node. In particular the main scene parent of a
+	// referenced DAG node will appear to be an unused transform if the
+	// reference is unloaded.
+	//
+	// This isn't so much a concern for main scene nodes which are 
+	// connected to referenced nodes because when the reference is unloaded
+	// they will be reconnected to the reference node, and shouldn't be
+	// flagged as unused.
+	//
+	string $associatedNodes[] = stringArrayRemoveDuplicates(`referenceQuery -topReference -editNodes -editCommand "parent"`);
+
+	int $i = 0;
+	for( $obj in $xforms ) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) 
+			{
+				$interrupted = 1;
+				break;
+			}
+		}
+
+		string $fullPath[] = `ls -l $obj`;
+		if ( !`stringArrayContains $fullPath[0] $associatedNodes` )
+		{
+			if( size( listRelatives("-c", $obj) ) == 0 ) {
+				if( `objectType $obj` == "transform") {
+					string $conn[] = `listConnections($obj)`;
+					if( size( $conn ) == 0 ) {
+						$unused[size($unused)] = $obj;
+					} else if( (size( $conn ) == 1)
+						&&  (`objectType $conn[0]` == "displayLayer") ) {
+						$unused[size($unused)] = $obj;
+					} else if( (size( $conn ) == 1)
+						&&  (`objectType $conn[0]` == "renderLayer") ) {
+						$unused[size($unused)] = $obj;
+					}
+				}
+			}
+		}
+
+		$i++;
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	if( !$interrupted )
+	{
+		return $unused;
+	}
+	else
+	{
+		return {};
+	}
+}
+	
+global proc int deleteEmptyGroups( ) 
+//
+//	Deletes anything returned by listEmptyGroups,
+//	until the list itself is empty
+//
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	int $iteration = 1;
+	string $findFmt = (uiRes("m_cleanUpScene.kFindingEmptyGroups"));
+	string $uiString = `format -s $iteration $findFmt`;
+
+	int $i;
+	string $unused[] = listEmptyGroups( $uiString );
+	//int $numTransf = size(`ls -transforms`);
+	int $numUnused = size($unused);
+
+	int $interrupted = 0;
+	int $totalNumDeleted = 0;
+
+	while ( $numUnused > 0 ) {
+		int $numDeleted = 0;
+
+		if( $showProgress )
+		{
+			string $deleteFmt = (uiRes("m_cleanUpScene.kDeletingEmptyGroups"));
+			cleanUp_StartProgress( size($unused), `format -s $iteration $deleteFmt`, 1 );
+		}
+
+		for ($i = 0; $i < size($unused); $i++) {
+
+			if( $showProgress )
+			{
+				if( cleanUp_SetProgress($i) )
+				{
+					$interrupted = true;
+					break;
+				}
+			}
+			
+			$numDeleted += deleteIfNotReferenced( $unused[$i] );
+		}
+
+		$totalNumDeleted += $numDeleted;
+
+		if( $interrupted )
+		{
+			break;
+		}
+
+		$iteration++;
+
+		if( $numDeleted == 0 )
+		{
+			//	There used to be a much more expensive loop exit test
+			//	here that involved `ls -transforms`, but we removed it.
+			//	If we didn't delete anything in the last pass, then 
+			//	subsequent passes will not have any effect, so we exit.
+			//
+			break;
+		}
+
+		$uiString = `format -s $iteration $findFmt`;
+		$unused = listEmptyGroups( $uiString );
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $totalNumDeleted;
+}
+
+global proc int deleteEmptyLayers(string $type)
+//
+// If $type == "Display" then delete display layers
+// If $type == "Render" then delete render layers
+//
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	string $objectType, $layer;
+	string $layerArray[], $layerContents[];
+	int $numDeleted = 0;
+
+	if ("Display" == $type) {
+		$objectType = "displayLayer";
+	} else {
+		$objectType = "renderLayer";
+	}
+
+	//	Get all layers of the appropriate type.
+	//
+	$layerArray = `ls -type $objectType`;
+
+	if( $showProgress )
+	{
+		string $fmt = (uiRes("m_cleanUpScene.kRemovingEmptyLayers"));
+		string $msg = `format -s $type $fmt`;
+		cleanUp_StartProgress( size($layerArray), $msg, 1 );
+	}
+
+	//	Determine the contents of each layer. Ignore default layers.
+	//
+	int $index = 0;
+	int $i = 0;
+	for ($layer in $layerArray) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) break;
+		}
+
+		//	Ignore default layers. Default layers have an id of 0.
+		//
+		if (0 < `getAttr ($layer + ".identification")`) {
+			if ("Display" == $type) {
+				$layerContents = `editDisplayLayerMembers -query $layer`;
+			} else if ("Render" == $type) {
+				$layerContents = `editRenderLayerMembers -query $layer`;
+			}
+			if (0 == size($layerContents)) {
+				//
+				//	This layer has nothing in it. Delete it.
+				//
+				$numDeleted += deleteIfNotReferenced ($layer);
+			}
+		}
+
+		$i++;
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+
+proc getAllParents(string $node, string $resultParents[])
+//
+// Description:
+//      Procedure to find all the parents at all levels above the specified
+//      node. The parent names will be appended to resultParents.
+//
+// Arguments:
+//      node            Name of node to get parents for.
+//      resultParents   Array to append parent names to.
+//
+//      cdt (March 2002)
+//
+{
+    string $parents[] = `listRelatives -allParents -fullPath $node`;
+
+    for ($parent in $parents) {
+        // Append to the end of the list.
+        $resultParents[size($resultParents)] = $parent;
+
+        getAllParents($parent, $resultParents);
+    }
+}
+
+global proc int deleteUnusedNurbsSurfaces()
+//
+// Description:
+//  Deletes nurbs surface that are identical to its input nurbs surface
+//
+{ 
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	string $nurbsSurfaces[] = `ls -type nurbsSurface`;
+	int $numNodes = size($nurbsSurfaces);
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( $numNodes, 
+							   (uiRes("m_cleanUpScene.kDeletingUnusedNurbsSurfaces")), 
+							   1 );
+	}
+
+	int $i = 0;
+	int $numDeleted = 0;
+
+	// Delete the nurbsSurface if
+	// 1) its only input  connection is to create
+	// 2) its input connected to a nurbsSurface with the same parent
+	// 3) input shape and current shape are identical, i.e. shapeCompare cmd returns 0.
+	for ($nurbsSurface in $nurbsSurfaces) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i++) ) break;
+		}
+
+		string $parts[];
+
+		int $nth = 0;
+		int $deleteIt = 0;
+
+		// Get the upstream nurbsSurface
+		string $upStreamSurface;
+		string $inConns[] = `listConnections -c 1 -p 1 -s 1 -d 0 ($nurbsSurface + ".create")`;
+		if (size($inConns) == 2) {
+			tokenize($inConns[1], ".", $parts);
+			$upStreamSurface = $parts[0];
+			$deleteIt = (nodeType($upStreamSurface) == "nurbsSurface");
+		}
+		if($deleteIt == 0) continue;
+
+		// All the incoming connections for $nurbsSurface & $upStreamSurface 
+		// must be coming from the same sources
+		$nth = 0;
+		$inConns = `listConnections -c 1 -p 1 -s 1 -d 0 $nurbsSurface`;
+		string $upStreamInConns[];
+		while($nth < size($inConns)) {
+			tokenize($inConns[0], ".", $parts);
+			if ($parts[1] != "create" && $parts[1] != "drawOverride") {
+				tokenize($inConns[$nth], ".", $parts);
+				$upStreamInConns = `listConnections -c 1 -p 1 -s 1 -d 0 ($upStreamSurface + "." + $parts[1])`;
+				if (size($upStreamInConns[0]) != 1 || $inConns[$nth] != $upStreamInConns[0]) {
+					$deleteIt = 0;
+					break;
+				}
+			} 
+			$nth += 2;
+		}
+		if($deleteIt == 0) continue;
+
+		// Two surfaces have the same parent
+		string $parentThis[] = `listRelatives -ap $nurbsSurface`;
+		string $parentUpStream[] = `listRelatives -ap $upStreamSurface`;
+		if (size($parentThis) != 1 || size($parentUpStream) != 1 ||
+		    $parentThis[0] != $parentUpStream[0]) continue;
+
+		if (shapeCompare($nurbsSurface, $upStreamSurface)) continue;
+
+		$numDeleted += deleteIfNotReferenced($nurbsSurface);
+	}
+	
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+
+global proc int deleteUnusedConstraints()
+//
+// Description:
+//  Deletes constraints that are not constraining any objects.
+//
+{ 
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	string $constraintTypes[] = { "pointConstraint",
+								  "pointOnPolyConstraint",
+								  "aimConstraint",
+								  "orientConstraint",
+								  "parentConstraint",
+								  "scaleConstraint",
+								  "normalConstraint",
+								  "tangentConstraint",
+								  "geometryConstraint"};
+	
+	string $typ;
+	int $numNodes = 0;
+	for( $typ in $constraintTypes )
+	{
+		$numNodes += size(`ls -type $typ`);
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( $numNodes, 
+							   (uiRes("m_cleanUpScene.kDeletingUnusedConstraints")), 
+							   1 );
+	}
+
+	int $numDeleted = 0;
+
+	int $i = 0;
+	for ($typ in $constraintTypes) {
+		string $constraints[] = `ls -type $typ`;
+
+		// Is the constraint driving anything?
+		//
+		for ($constraint in $constraints) {
+
+			if( $showProgress )
+			{
+				if( cleanUp_SetProgress($i++) ) break;
+			}
+
+			// are there any outgoing connections?
+			//
+			string $conns[] = `listConnections -s 0 -d 1 $constraint`;
+
+			int $deleteIt = 1;
+			for ($conn in $conns) {
+				// ignore outgoing connections that lead to this node itself
+				// (constraints connect their weight attribute to a dynamic weight
+				// attribute)
+				//
+				if ($conn != $constraint) {
+					$deleteIt = 0;
+					break;
+				}
+			}
+			if ($deleteIt) {
+				$numDeleted += deleteIfNotReferenced($constraint);
+			}
+		}
+	}
+	
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+
+global proc int deleteUnusedPairBlends()
+//
+// Description:
+//  Deletes pairBlends that meet the following criteria:
+//   1. have no outputs, or
+//   2. have no connections to input2	
+//
+{ 
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+	string $pairBlends[] = `ls -type pairBlend`;
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( size($pairBlends), 
+							   (uiRes("m_cleanUpScene.kDeletingUnusedPairBlends")), 
+							   1 );
+	}
+
+	int $numDeleted = 0;
+	int $i = 0;
+	for ($pairBlend in $pairBlends) {
+		
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i++) ) break;
+		}
+		
+		int $deleteIt = 0;
+		string $conns[] = `listConnections -s 0 -d 1 $pairBlend`;
+		if (0 == size($conns)) {
+			$deleteIt = 1;
+		} else {
+			string $inputs[] = `pairBlend -q -input2 $pairBlend`;
+			if (0 == size($inputs)) {
+				$deleteIt = 1;
+			}
+		}
+		if ($deleteIt) {
+			$numDeleted += deleteIfNotReferenced($pairBlend);
+		}
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+	
+	return $numDeleted;
+}
+
+global proc int deleteUnusedLocators()
+// 
+// Desription:
+//    Deletes those locator objects that don't have connections
+//    to either their shape or transform nodes. 
+//
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+
+    int $i, $j, $shapeConnections, $parentConnections;
+    string $nodeList[] = `ls -typ locator`;
+    string $connectionList[];
+    string $parent[];
+	int $numDeleted = 0;
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( size($nodeList), 
+							   (uiRes("m_cleanUpScene.kDeletingUnusedLocators")), 
+							   1 );
+	}
+
+    for ($i = 0; $i < size($nodeList); $i++) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) break;
+		}
+
+		//
+		//	Here's the rule for when a locator is considered "used".
+		//
+		//	- if it has any connections to the locator shape, then it is used
+		//	- if it has a parent with connections, then it is used
+		//	- if it has a parent that has more than one child, then it could
+		//	  be part of a character hierarchy, so it is considered used
+		//
+
+		//	First, check the locator shape for direct connections
+		//
+		string $locatorShape = $nodeList[$i];
+        $connectionList = `listConnections $locatorShape`;
+        $numConnections = size($connectionList);
+
+		if ($numConnections == 0)
+		{
+			//	Next, check all parents of the locator shape for either
+			//	connections or other children
+			//
+            clear($parent);
+            getAllParents($locatorShape, $parent);
+
+			int $parentOK = true;
+			for($j = 0; $j < size($parent); $j++)
+			{
+				// look for connections
+				string $parentNode = $parent[$j];
+				$connectionList = `listConnections $parentNode`;
+				$parentConnections = size($connectionList);
+				if ($parentConnections != 0)
+				{
+					$parentOK = false;
+					break;
+				}
+
+			}
+			if ($parentOK)
+			{
+				string $immedParents[] = `listRelatives -f -p $nodeList[$i]`;
+				for($j=0;$j<size($immedParents);$j++)
+				{
+					$parentNode = $immedParents[$j];
+
+					// Don't remove the locator transform if there are  
+					// objects parented under it other than the locator
+					// shape.  Note that we do NOT want to use the "parents"
+					// list from above, which includes all parents up the
+					// hierarchy, otherwise we could end up deleting the
+					// entire hierarchy, regardless of its contents 
+					// (if the root node contained only one child, for example).
+					//
+					string $childL[] = `listRelatives -c $parentNode`;
+					if (size($childL) > 1)
+						continue;
+					
+					$numDeleted += deleteIfNotReferenced( $parentNode );
+				}
+			}
+        }
+    }
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+//
+//	cleanUpScene:
+//		$option = 1: does the cleanup operation
+//		$option = 2: option window for cleanup
+//		$option = 3: cleanup operation for everything regardless of options
+//
+global proc cleanUpScene (int $option)
+{
+	//	call the initialization function to register user cleanup operations
+	//
+	cleanUp_RegisterUserCleanUps();
+
+	if ($option == 1) {	
+		// Do the cleanup
+		setOptionVars (false);
+		performCleanUpScene();
+	} else if ($option == 2) {
+		// Option window for the cleanup work
+		cleanUpOptions();
+	} else if ($option == 3) {
+		performCleanUpSceneForEverything();
+	}
+}
+
+
+global proc cleanUp_Initialize()
+{
+	global string $gCleanUpSummary[];
+	global string $gCleanUpSteps[];
+	global int $gCleanUpInterrupted;
+
+	$gCleanUpSummary = {};
+	$gCleanUpSteps = {};
+	$gCleanUpInterrupted = 0;
+}
+
+global proc cleanUp_GetSummary( string $summary[], string $steps[] )
+{
+	global string $gCleanUpSummary[];
+	global string $gCleanUpSteps[];
+	
+	$summary = $gCleanUpSummary;
+	$steps = $gCleanUpSteps;
+}
+
+global proc cleanUp_EnableProgressReporting( int $enable )
+{
+	//	global variable that determines whether progress
+	//	reporting is enabled
+	global int $gCleanUpProgressReporting;
+	
+	$gCleanUpProgressReporting = $enable;
+}
+	
+//
+//	invokes the MEL procs to start deleting the unused database.
+//
+global proc performCleanUpScene ()
+{
+	string $ok	   = (uiRes("m_cleanUpScene.kOK"));
+	string $result = $ok;
+	string $cancel = (uiRes("m_cleanUpScene.kCancel"));		
+	
+	//
+	//	We will use catch statements around each individual optimization
+	//	step to detect any errors (syntax errors or other error conditions)
+	//	that may occur.  This is important so that errors in one step
+	//	do not cause the whole process to abort.  Also, since the optimization
+	//	steps mess around with the progress bar and the global cursor state,
+	//	it is important that we restore these things to their previous
+	//	states before this function exits.
+	//
+	int $errorCount = 0;
+
+	cleanUp_Initialize();
+
+	//	so that we can suppress the user confirmation dialog
+	//	during automated testing
+	//
+	int $suppressDialog = 0;
+//	if( size(`getenv "MAYA_TESTING_CLEANUP"`) > 0 )
+	{
+		$suppressDialog = 1;
+	}
+	
+	if( !$suppressDialog )
+	{
+		// Confirm that a cleanup is desired (since this is not undoable)
+		$result = `confirmDialog 
+			-title (uiRes("m_cleanUpScene.kVerifyingAction")) 
+			-message (uiRes("m_cleanUpScene.kOptimizeCurrSceneSize"))  
+			-button $ok -button $cancel`; 
+	}
+	
+	if (!`about -batch` && $result != $ok) {
+		return;
+	}
+
+	print "\n";
+
+	//	turn on progress reporting
+	//
+	cleanUp_EnableProgressReporting(1);
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query nurbsSrfOption` ) {
+			
+			print (uiRes("m_cleanUpScene.kRemovingInvalidNurbs")) ;
+			print "------------------------------------------\n";
+			int $numDel = 0;
+			
+			$errorCount += catch ( $numDel += deleteInvalidNurbs(0)  );
+			
+			// These nodes can be considered "invalid" 
+			// if they have no connections.  The list is
+			// far from complete; we'll add to it as needed.
+			//
+			$errorCount += catch (
+								  $numDel += deleteUnusedCommon_Multi( 
+									{"stitchSrf","rebuildSurface","insertKnotSurface","avgNurbsSurfacePoints"}, 
+									0, 
+									(uiRes("m_cleanUpScene.kRemovingInvalid"))  )
+								  );
+			
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumInvalid")) ;
+			string $msg = `format -s $numDel $fmt`;
+			
+			
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedInvalid")),
+							 $msg );
+			
+			print "\n";
+		}
+	}	
+
+	if( cleanUp_CheckInterrupt() )
+	{
+	    if (`optionVar -query nurbsCrvOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedNurbsCurves")) ;
+			print "----------------------------\n";
+        
+			int $numDel = 0;
+			$errorCount += catch (
+	        	$numDel = deleteUnusedInUnusedHierarchy( "nurbsCurve", 0,
+														 (uiRes("m_cleanUpScene.kDeletingUnusedNurbsCurves"))  )
+				);
+
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedNurbsCurves"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedNurbsCurves")),
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+	    if (`optionVar -query unusedNurbsSrfOption`) {
+        	print (uiRes("m_cleanUpScene.kRemovingUnusedNurbsSurfaces")) ;
+        	print "----------------------------\n";
+        
+        	int $numDel = 0;
+        	$errorCount += catch ( $numDel = deleteUnusedNurbsSurfaces() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedNurbsSurfaces")) ;
+			string $msg = `format -s $numDel $fmt`;
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedNurbsSurfaces")), 
+							 $msg );
+	        print "\n";
+	    }
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query locatorOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedLocators"));
+			print "------------------------\n";
+			int $numDel = 0;
+			
+			$errorCount += catch( $numDel = deleteUnusedLocators() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedLocators"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedLocators")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query ptConOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedConstraints"));
+			print "---------------------------------\n";
+			int $numDel = 0;
+			
+			$errorCount += catch( $numDel = deleteUnusedConstraints() );
+			
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedConstraints"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedConstraints")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query pbOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedPairBlends"));
+			print "---------------------------------\n";
+			int $numDel = 0;
+			
+			$errorCount += catch( $numDel = deleteUnusedPairBlends() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedPairBlends"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedPairBlends")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query deformerOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedDeformers"));
+			print "-------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedDeformers() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedDeformers"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedDeformers")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query unusedSkinInfsOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedSkinInfluences"));
+			print "-------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = removeAllUnusedSkinInfs() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedSkinInfluences"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedSkinInfluences")) , 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query expressionOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedExpressions"));
+			print "---------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedExpressions() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedExpressions"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedExpressions")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query groupIDnOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedGroupID"));
+			print "-----------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedCommon("groupId", 0, 
+															   (uiRes("m_cleanUpScene.kDeletingUnusedGroupIDNodes"))) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedGroupIDNodes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedGroupIDNodes")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query animationCurveOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedAnimationCurves")) ;
+			print "--------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedCommon( "animCurve", 0, 
+																(uiRes("m_cleanUpScene.kDeletingUnusedAnimationCurves"))  ) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedAnimationCurves")) ;
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedAnimationCurves")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query clipOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedAnimationClips")) ;
+			print "-------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedTrax( "clips" ) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedAnimationClips"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedAnimationClips")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query poseOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedAnimationPoses"));
+			print "-------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedTrax( "poses" ) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedAnimationPoses"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedAnimationPoses")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query snapshotOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedSnapshotNodes")) ;
+			print "------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedCommon("snapshot", 1,
+															   (uiRes("m_cleanUpScene.kDeletingUnusedSnapshotNodes"))  ) );
+			
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedSnapshotNodes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedSnapshotNodes")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query unitConversionOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedUnitConversionNodes"));
+			print "-------------------------------------\n";
+			
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedCommon_Multi( {	"unitConversion", "timeToUnitConversion", "unitToTimeConversion" },
+																	  1, 
+																	  (uiRes("m_cleanUpScene.kDeletingUnusedUnitConversionNodes")) ) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedUnitConversionNodes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedUnitConversionNodes")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query shaderOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedRenderingNodes")) ;
+			print "-------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = MLdeleteUnused() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedRenderingNodes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedRenderingNodes")),
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query cachedOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingCachedDataInDatablocks"));
+			print "----------------------------------\n";
+			
+			cleanUp_StartProgress( 1, (uiRes("m_cleanUpScene.kRemovingCachedDataInDatablocks2")), 1 );
+			int $cleared = 0;
+			$errorCount = catch( $cleared = `clearCache -allNodes` );
+			cleanUp_EndProgress();
+			string $fmt = (uiRes("m_cleanUpScene.kCleanedOutNumDatablocks"));
+			print `format -s $cleared $fmt`;
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedCachedDataInDatablocks")), 
+							 `format -s $cleared $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query transformOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingEmptyTransforms")) ;
+			print "-------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteEmptyGroups() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyTransforms"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyTransforms")),
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query displayLayerOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingEmptyDisplayLayers"));
+			print "-----------------------------\n";
+			int $numDel = 0;
+
+			$errorCount += catch( $numDel = deleteEmptyLayers("Display") );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyDisplayLayers"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyDisplayLayers")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query renderLayerOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingEmptyRenderLayers")) ;
+			print "-----------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteEmptyLayers("Render") );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyRenderLayers"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyRenderLayers")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query setsOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingEmptySets")) ;
+			print "-------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedSets() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptySets")) ;
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptySets")) , 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query partitionOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingEmptyPartitions")) ;
+			print "-------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedCommon( "partition", 0, 
+																(uiRes("m_cleanUpScene.kDeletingEmptyPartitions")) ) );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyPartitions"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyPartitions")), 
+							`format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+	
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query referencedOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedReferencedItems"));
+			print "--------------------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = RNdeleteUnused() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedReferencedItems"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedReferencedItems")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+	
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query brushOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnusedBrushes"));
+			print "-----------------------\n";
+			int $numDel = 0;
+			$errorCount += catch( $numDel = deleteUnusedBrushes() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedBrushes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedBrushes")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+	
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query unknownNodesOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingUnknownNodes"));
+			print "------------------------------------\n";
+        
+			int $numDel = 0;
+			$errorCount += 	catch( $numDel = deleteUnknownNodes() );
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumUnknownNodes"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnknownNodes")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+
+	if( cleanUp_CheckInterrupt() )
+	{
+		if (`optionVar -query shadingNetworksOption`) {
+			print (uiRes("m_cleanUpScene.kRemovingDuplicateShadingNetworks"));
+			print "------------------------------------\n";
+			
+			int $numDel = 0;
+			$errorCount += 	catch( $numDel = removeDuplicateShadingNetworks(0) );
+			
+			string $fmt = (uiRes("m_cleanUpScene.kRemovedNumDuplicateShadingNetworks"));
+			cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedDuplicateShadingNetworks")), 
+							 `format -s $numDel $fmt` );
+			print "\n";
+		}
+	}
+	
+	$errorCount += userCleanUp_PerformCleanUpScene();
+	
+	//	turn off progress reporting
+	//
+	cleanUp_EnableProgressReporting(0);
+	
+	string $stepsRun[];
+	string $summaries[];
+	cleanUp_GetSummary( $summaries, $stepsRun );
+
+	print (uiRes("m_cleanUpScene.kOptimizeSceneSizeSummary"));
+	print "----------------------------\n";
+	for( $i = 0; $i < size($summaries); $i++ )
+	{
+		string $fmt = (uiRes("m_cleanUpScene.kSummaryFmt"));
+		print `format -s $summaries[$i] $fmt`;
+	}
+	print "\n";
+
+	string $details;
+	for( $i = 0; $i < size($stepsRun); $i++ )
+	{
+		$details += $stepsRun[$i];
+
+		if( $i < size($stepsRun)-1 )
+		{
+			$details += ", ";
+		}
+	}
+
+	string $msg;
+	if( $errorCount > 0 ) {
+		string $fmt = (uiRes("m_cleanUpScene.kSceneOptimizedErrors"));
+		$msg = `format -s $errorCount -s $details $fmt`;
+	} else {
+		string $fmt = (uiRes("m_cleanUpScene.kSceneOptimized"));
+		$msg = `format -s $details $fmt`;
+	}
+	
+	//	If any errors occurred during optimization, output a warning at
+	//	the end to let the user know.
+	//
+	if( $errorCount > 0 ) {
+		warning $msg;
+	} else {
+		print $msg;
+	}
+
+	//	if an error occurred in one of the stages, then it wouldn't have 
+	//	called cleanUp_EndProgress(), therefore the progress bar and wait
+	//	cursor would be in the wrong state.  We'll call it here.
+	//	
+	if( $errorCount ) {
+		cleanUp_EndProgress();
+	}
+}
+
+//
+//	Same as performCleanUpScene, except everything is cleaned up.
+//	This is what gets called when you run maya -optimizeRender
+//	on your scene.
+//
+global proc performCleanUpSceneForEverything ()
+{
+	int $errorCount = 0;
+	
+	//	clear the summaries, interrupts for the cleanup operation
+	//
+	cleanUp_Initialize();
+	
+	//	turn on progress reporting
+	//
+	cleanUp_EnableProgressReporting(1);
+	
+	print (uiRes("m_cleanUpScene.kCleanUpDatabase")) ;
+	print "-----------------\n\n";
+
+	//	1. Delete invalid nurbs curves and surfaces
+	//
+	int $numDel = 0;
+	
+	$errorCount += catch(
+		$numDel = deleteInvalidNurbs(0)
+	);
+	
+	$errorCount += catch(
+		$numDel += deleteUnusedCommon_Multi( 
+			   {"stitchSrf","rebuildSurface","insertKnotSurface","avgNurbsSurfacePoints"}, 
+			    0, (uiRes("m_cleanUpScene.kDeletingUnusedPointConstraints")) )
+	);
+	string $fmt = (uiRes("m_cleanUpScene.kRemovedNumInvalidNurbsCurvesAndSurfaces"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedInvalidNurbsCurvesAndSurfaces")),
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	2. Delete unused nurbs curves
+	//
+	$numDel = 0;
+	$errorCount += catch(
+		$numDel = deleteUnusedInUnusedHierarchy( "nurbsCurve", 0,
+											 	 (uiRes("m_cleanUpScene.kDeletingUnusedNurbsCurves2")) )
+	);
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedNurbsCurves2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedNurbsCurves2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	3. Delete unused locators
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedLocators() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedLocators2"));
+	cleanUp_Summary( "Removed unused locators", `format -s $numDel $fmt` );
+	print "\n";
+
+	//	4. Delete unused constraints
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedConstraints() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedConstraints2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedConstraints2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	5. Delete unused pairBlends
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedPairBlends() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedPairBlends2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedPairBlends2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+
+	//	6. Delete unused deformers
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedDeformers() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedDeformers2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedDeformers2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	7. Delete unused skin influences
+	//
+    $numDel = 0;
+	$errorCount += catch( $numDel = removeAllUnusedSkinInfs() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedSkinInfluences2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedSkinInfluences2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+	
+	//	8. Delete unused expressions
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedExpressions() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedExpressions2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedExpressions2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	9. Delete unused groupId nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedCommon( "groupId", 0, 
+														(uiRes("m_cleanUpScene.kDeletingUnusedGroupIDNodes2")) ) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedGroupIDNodes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedGroupIDNodes2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	10. Delete unused animCurve nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedCommon( "animCurve", 0, 
+														(uiRes("m_cleanUpScene.kDeletingUnusedAnimationCurves2")) ) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedAnimationCurves2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedAnimationCurves2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+		   
+	//	11. Delete unused snapshot nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedCommon("snapshot", 1, 
+													   (uiRes("m_cleanUpScene.kDeletingUnusedSnapshotNodes2")) ) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedSnapshotNodes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedSnapshotNodes2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	12. Delete unused unitConversion nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedCommon_Multi( {"unitConversion","timeToUnitConversion","unitToTimeConversion"},
+															  1, 
+															  (uiRes("m_cleanUpScene.kDeletingUnusedUnitConversionNodes2")) ) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedUnitConversionNodes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedUnitConversionNodes2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	13. Delete unused rendering nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = MLdeleteUnused() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedRenderingNodes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedRenderingNodes2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	14. Delete unused cached datablock stuff
+	//
+	int $cleared = 0;
+	$errorCount += catch( $cleared = `clearCache -allNodes` );
+	
+	$fmt = (uiRes("m_cleanUpScene.kCleanedOutNumDatablocks2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedCachedDataInDatablocks2")), 
+					 `format -s $cleared $fmt` );
+	print "\n";
+
+	//	15. Delete empty transforms
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteEmptyGroups() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyTransforms2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyTransforms2")),
+					 `format -s $numDel $fmt` );
+	print "\n";
+	
+	//	16. Delete empty display layers
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteEmptyLayers("Display") );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyDisplayLayers2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyDisplayLayers2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+	
+	//	17. Delete empty render layers
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteEmptyLayers("Render") );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyRenderLayers2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyRenderLayers2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+    
+	//	18. Delete unused sets
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedSets() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptySets2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptySets2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+    
+	//	19. Delete unused partitions
+	//
+	$numDel = 0;
+    $errorCount += catch( $numDel = deleteUnusedCommon( "partition", 0, 
+														(uiRes("m_cleanUpScene.kDeletingEmptyPartitions2")) ) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumEmptyPartitions2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedEmptyPartitions2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+	
+	//	20. Delete unused reference nodes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = RNdeleteUnused() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedReferencedItems2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedReferencedItems2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	21. Delete unused brushes
+	//
+	$numDel = 0;
+	$errorCount += catch( $numDel = deleteUnusedBrushes() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnusedBrushes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnusedBrushes2")), 
+					 `format -s $numDel $fmt` );
+	print "\n";
+
+	//	22. Delete unknown nodes
+	//
+	$numDel = 0;
+    $errorCount += 	catch( $numDel = deleteUnknownNodes() );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumUnknownNodes2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedUnknownNodes2")), 
+					 `format -s $numDel $fmt` );
+    print "\n";
+
+	//	23. Delete duplicate shading networks
+	//
+	$numDel = 0;
+    $errorCount += 	catch( $numDel = removeDuplicateShadingNetworks(0) );
+	$fmt = (uiRes("m_cleanUpScene.kRemovedNumDuplicateShadingNetworks2"));
+	cleanUp_Summary( (uiRes("m_cleanUpScene.kRemovedDuplicateShadingNetworks2")), 
+					 `format -s $numDel $fmt` );
+    print "\n";
+
+	//	24. Run user-defined cleanup operations
+	//
+	$errorCount += userCleanUp_PerformCleanUpScene();
+
+	//	turn off progress reporting
+	//
+	cleanUp_EnableProgressReporting(0);
+
+	string $stepsRun[];
+	string $summaries[];
+	cleanUp_GetSummary( $summaries, $stepsRun );
+
+	print( (uiRes("m_cleanUpScene.kOptimizeSceneSizeSummary2")) );
+	print( "----------------------------\n" );
+	for( $i = 0; $i < size($summaries); $i++ )
+	{
+		string $fmt = (uiRes("m_cleanUpScene.kSummaryFmt2"));
+		print `format -s $summaries[$i] $fmt`;
+	}
+	print "\n";
+	
+	if( $errorCount > 0 )
+	{
+		string $fmt = (uiRes("m_cleanUpScene.kOptimizedErrors"));
+		warning `format -s $errorCount $fmt`;
+		cleanUp_EndProgress();
+	}
+}
+
+//
+//	option box layout for cleanup
+//
+global proc cleanUpOptions ()
+{
+	string $commandName = "cleanUpScene";
+	string $callback = ($commandName + "Callback");
+	string $setup = ($commandName + "Setup");
+
+	string $layout = getOptionBox();
+	setParent $layout;
+	string $optionBoxTitle = (uiRes("m_cleanUpScene.kOptimizeSceneSizeOptions"));
+
+	setOptionBoxCommandName($commandName);
+
+	string $tabLayout = `tabLayout -scrollable 1`;
+	tabLayout -edit
+        -tabsVisible false
+        -preSelectCommand ("createCleanUpSceneTabUI " + $tabLayout)
+        $tabLayout;
+	columnLayout -adj true;
+		setParent ..;
+	tabLayout -edit
+        $tabLayout;
+
+	createCleanUpSceneTabUI($tabLayout);
+
+
+	//  Std buttons for options.
+    //
+	string $applyBtn = getOptionBoxApplyBtn();
+	button -edit -label (uiRes("m_cleanUpScene.kOptimize")) 
+        -command ($callback + " " + $tabLayout + " " + 1 + "; performCleanUpScene")
+        $applyBtn;
+    string $saveBtn = getOptionBoxSaveBtn();
+    button -edit 
+        -command ($callback + " " + $tabLayout + " " + 0 + "; hideOptionBox")
+        $saveBtn;
+    string $resetBtn = getOptionBoxResetBtn();
+    button -edit
+        -command ($setup + " " + $tabLayout + " " + 1)
+        $resetBtn;
+
+    setOptionBoxTitle($optionBoxTitle);
+
+	//	Customize the 'Help' menu item text.
+	//
+	setOptionBoxHelpTag( "OptimizeSceneSize" );
+
+	showOptionBox();
+}
+
+
+global proc createCleanUpSceneTabUI (string $tabLayout)
+{
+    string $tab[] = `tabLayout -query -childArray $tabLayout`;
+    string $optimNow = (uiRes("m_cleanUpScene.kOptimizeNow"));
+    
+    int $currentTabIndex = `tabLayout -query -selectTabIndex $tabLayout`;
+
+    if (0 == `columnLayout -query -numberOfChildren $tab[$currentTabIndex-1]`) {
+
+        setParent $tab[$currentTabIndex-1];
+
+        string $label;
+        int $index;
+
+        waitCursor -state 1;
+        
+        //Makes it easier to change all of the label widths at once when needed
+        int $textWidth = 310;
+
+        if (1 == $currentTabIndex) {
+
+			// For different platforms looks better if we use different
+			// heights for the button size
+			
+			int $useHeight = 18;
+				
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label (uiRes("m_cleanUpScene.kRemoveInvalid")) 
+					-label1 (uiRes("m_cleanUpScene.kNURBSSurfaces"))  nurbsSrfOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"nurbsSrfOption\" } )";
+				setParent ..;
+
+			separator;			
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label (uiRes("m_cleanUpScene.kRemoveEmpty")) 
+					-label1 (uiRes("m_cleanUpScene.kSets"))  setsOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"setsOption\" } )";
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label ""
+					-label1 (uiRes("m_cleanUpScene.kPartitions"))  partitionOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"partitionOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label ""
+					-label1 (uiRes("m_cleanUpScene.kTransforms"))  transformOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"transformOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label ""
+					-label1 (uiRes("m_cleanUpScene.kDisplayLayers"))  displayLayerOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"displayLayerOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label ""
+					-label1 (uiRes("m_cleanUpScene.kRenderLayers"))  renderLayerOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"renderLayerOption\" } )";			
+				setParent ..;
+
+			separator;			
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1  -label (uiRes("m_cleanUpScene.kRemoveUnused")) 
+					-label1 (uiRes("m_cleanUpScene.kAnimationCurves"))  animationCurveOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"animationCurveOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kAnimationClips"))  -value1 false clipOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"clipOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kPoses"))  -value1 false poseOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"poseOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kNURBSCurves"))  -value1 false nurbsCrvOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"nurbsCrvOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kNurbsSurfaces")) -value1 false unusedNurbsSrfOption;
+				button -l $optimNow
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"unusedNurbsSrfOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kCachedData"))  -value1 false cachedOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"cachedOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kDeformers"))  deformerOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"deformerOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+			    checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kUnusedSkinInfluences"))  unusedSkinInfsOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"unusedSkinInfsOption\" } )";
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kExpressions"))  -value1 false expressionOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"expressionOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kGroupIDNodes"))  groupIDnOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"groupIDnOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kRenderingNodes"))  shaderOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"shaderOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kLocators"))  locatorOption;
+				button -label $optimNow 
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"locatorOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kConstraints"))  ptConOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"ptConOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kPairBlends"))  pbOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"pbOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kSnapshotNodes"))  snapshotOption;
+				button -label $optimNow 
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"snapshotOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+			checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kUnitConversionNodes"))  
+				unitConversionOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"unitConversionOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kReferencedItems"))  referencedOption;
+				button -label $optimNow 
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"referencedOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1 -label "" -label1 (uiRes("m_cleanUpScene.kBrushes"))  brushOption;
+				button -label $optimNow  
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"brushOption\" } )";			
+				setParent ..;
+
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1  -label (uiRes("m_cleanUpScene.kRemove")) 
+					-label1 (uiRes("m_cleanUpScene.kUnknownNodes"))  unknownNodesOption;
+				button -label $optimNow 
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"unknownNodesOption\" } )";			
+				setParent ..;
+
+			separator;
+			
+			rowLayout -nc 2 -cat 2 "left" 0 -cw 1 $textWidth;
+				checkBoxGrp -ncb 1  -label (uiRes("m_cleanUpScene.kRemoveDuplicate")) 
+					-label1 (uiRes("m_cleanUpScene.kShadingNetworks"))  shadingNetworksOption;
+				button -label $optimNow 
+					   -height $useHeight 
+					   -c "scOpt_performOneCleanup( { \"shadingNetworksOption\" } )";			
+				setParent ..;
+			
+			separator;
+			
+			userCleanUp_CreateUI();
+
+			//separator;
+
+			setParent ..;
+
+		}
+
+		eval (("cleanUpSceneSetup " + $tabLayout + " " + 0));
+
+        waitCursor -state 0;
+	}
+}
+
+//
+//	intialize the options for cleanup
+//
+global proc setOptionVars(int $forceFactorySettings)
+{
+	if ($forceFactorySettings || !`optionVar -exists nurbsSrfOption`)
+		optionVar -intValue nurbsSrfOption true;
+	if ($forceFactorySettings || !`optionVar -exists nurbsCrvOption`)
+        	optionVar -intValue nurbsCrvOption false;
+	if ($forceFactorySettings || !`optionVar -exists unusedNurbsSrfOption`)
+        	optionVar -intValue unusedNurbsSrfOption false;
+	if ($forceFactorySettings || !`optionVar -exists deformerOption`)
+		optionVar -intValue deformerOption true;
+	if ($forceFactorySettings || !`optionVar -exists unusedSkinInfsOption`)
+		optionVar -intValue unusedSkinInfsOption true;
+	if ($forceFactorySettings || !`optionVar -exists poseOption`)
+		optionVar -intValue poseOption false;
+	if ($forceFactorySettings || !`optionVar -exists clipOption`)
+		optionVar -intValue clipOption false;
+	if ($forceFactorySettings || !`optionVar -exists expressionOption`)
+		optionVar -intValue expressionOption false;
+	if ($forceFactorySettings || !`optionVar -exists groupIDnOption`)
+		optionVar -intValue groupIDnOption true;
+	if ($forceFactorySettings || !`optionVar -exists animationCurveOption`)
+		optionVar -intValue animationCurveOption true;
+	if ($forceFactorySettings || !`optionVar -exists shaderOption`)
+		optionVar -intValue shaderOption true;
+	if ($forceFactorySettings || !`optionVar -exists cachedOption`)
+		optionVar -intValue cachedOption false;
+	if ($forceFactorySettings || !`optionVar -exists transformOption`)
+		optionVar -intValue transformOption true;
+	if ($forceFactorySettings || !`optionVar -exists displayLayerOption`)
+		optionVar -intValue displayLayerOption true;
+	if ($forceFactorySettings || !`optionVar -exists renderLayerOption`)
+		optionVar -intValue renderLayerOption true;
+    if ($forceFactorySettings || !`optionVar -exists setsOption`)
+        optionVar -intValue setsOption true;
+    if ($forceFactorySettings || !`optionVar -exists partitionOption`)
+        optionVar -intValue partitionOption false;
+    if ($forceFactorySettings || !`optionVar -exists locatorOption`)
+        optionVar -intValue locatorOption false;
+    if ($forceFactorySettings || !`optionVar -exists ptConOption`)
+        optionVar -intValue ptConOption true;
+    if ($forceFactorySettings || !`optionVar -exists pbOption`)
+        optionVar -intValue pbOption true;
+    if ($forceFactorySettings || !`optionVar -exists snapshotOption`)
+        optionVar -intValue snapshotOption true;
+    if ($forceFactorySettings || !`optionVar -exists unitConversionOption`)
+        optionVar -intValue unitConversionOption true;
+    if ($forceFactorySettings || !`optionVar -exists referencedOption`)
+        optionVar -intValue referencedOption true;
+    if ($forceFactorySettings || !`optionVar -exists brushOption`)
+        optionVar -intValue brushOption true;
+    if ($forceFactorySettings || !`optionVar -exists unknownNodesOption`)
+        optionVar -intValue unknownNodesOption false;
+    if ($forceFactorySettings || !`optionVar -exists shadingNetworksOption`)
+        optionVar -intValue shadingNetworksOption false;
+
+	userCleanUp_SetOptionVars($forceFactorySettings);
+}
+
+
+
+//
+//	callback to set the values based on current settings
+//
+global proc cleanUpSceneCallback(string $parent, int $doIt)
+{
+    setParent $parent;
+	
+	if (`checkBoxGrp -exists nurbsSrfOption`) {
+		optionVar -intValue nurbsSrfOption
+			`checkBoxGrp -query -value1 nurbsSrfOption`;
+	}
+	if (`checkBoxGrp -exists nurbsCrvOption`) {
+		optionVar -intValue nurbsCrvOption
+			`checkBoxGrp -query -value1 nurbsCrvOption`;
+	}
+	if (`checkBoxGrp -exists unusedNurbsSrfOption`) {
+		optionVar -intValue unusedNurbsSrfOption
+			`checkBoxGrp -query -value1 unusedNurbsSrfOption`;
+	}
+	if (`checkBoxGrp -exists deformerOption`) {
+		optionVar -intValue deformerOption
+			`checkBoxGrp -query -value1 deformerOption`;
+	}
+	if (`checkBoxGrp -exists unusedSkinInfsOption`) {
+		optionVar -intValue unusedSkinInfsOption
+			`checkBoxGrp -query -value1 unusedSkinInfsOption`;
+	}
+	if (`checkBoxGrp -exists poseOption`) {
+		optionVar -intValue poseOption
+			`checkBoxGrp -query -value1 poseOption`;
+	}
+	if (`checkBoxGrp -exists clipOption`) {
+		optionVar -intValue clipOption
+			`checkBoxGrp -query -value1 clipOption`;
+	}
+    if (`checkBoxGrp -exists expressionOption`) {
+        optionVar -intValue expressionOption
+            `checkBoxGrp -query -value1 expressionOption`;
+    }
+    if (`checkBoxGrp -exists groupIDnOption`) {
+        optionVar -intValue groupIDnOption
+            `checkBoxGrp -query -value1 groupIDnOption`;
+    }
+    if (`checkBoxGrp -exists animationCurveOption`) {
+        optionVar -intValue animationCurveOption
+            `checkBoxGrp -query -value1 animationCurveOption`;
+    }
+    if (`checkBoxGrp -exists shaderOption`) {
+        optionVar -intValue shaderOption
+            `checkBoxGrp -query -value1 shaderOption`;
+    }
+    if (`checkBoxGrp -exists cachedOption`) {
+        optionVar -intValue cachedOption
+            `checkBoxGrp -query -value1 cachedOption`;
+    }
+    if (`checkBoxGrp -exists transformOption`) {
+        optionVar -intValue transformOption
+            `checkBoxGrp -query -value1 transformOption`;
+    }
+    if (`checkBoxGrp -exists displayLayerOption`) {
+        optionVar -intValue displayLayerOption
+            `checkBoxGrp -query -value1 displayLayerOption`;
+    }
+    if (`checkBoxGrp -exists renderLayerOption`) {
+        optionVar -intValue renderLayerOption
+            `checkBoxGrp -query -value1 renderLayerOption`;
+    }
+    if (`checkBoxGrp -exists setsOption`) {
+        optionVar -intValue setsOption
+            `checkBoxGrp -query -value1 setsOption`;
+    }
+    if (`checkBoxGrp -exists partitionOption`) {
+        optionVar -intValue partitionOption
+            `checkBoxGrp -query -value1 partitionOption`;
+    }
+    if (`checkBoxGrp -exists locatorOption`) {
+        optionVar -intValue locatorOption
+            `checkBoxGrp -query -value1 locatorOption`;
+    }
+    if (`checkBoxGrp -exists ptConOption`) {
+        optionVar -intValue ptConOption
+            `checkBoxGrp -query -value1 ptConOption`;
+    }
+    if (`checkBoxGrp -exists pbOption`) {
+        optionVar -intValue pbOption
+            `checkBoxGrp -query -value1 pbOption`;
+    }
+    if (`checkBoxGrp -exists snapshotOption`) {
+        optionVar -intValue snapshotOption
+            `checkBoxGrp -query -value1 snapshotOption`;
+    }
+    if (`checkBoxGrp -exists unitConversionOption`) {
+        optionVar -intValue unitConversionOption
+            `checkBoxGrp -query -value1 unitConversionOption`;
+    }
+    if (`checkBoxGrp -exists referencedOption`) {
+        optionVar -intValue referencedOption
+            `checkBoxGrp -query -value1 referencedOption`;
+    }
+    if (`checkBoxGrp -exists brushOption`) {
+        optionVar -intValue brushOption
+            `checkBoxGrp -query -value1 brushOption`;
+    }
+    if (`checkBoxGrp -exists unknownNodesOption`) {
+        optionVar -intValue unknownNodesOption
+            `checkBoxGrp -query -value1 unknownNodesOption`;
+    }
+    if (`checkBoxGrp -exists shadingNetworksOption`) {
+        optionVar -intValue shadingNetworksOption
+            `checkBoxGrp -query -value1 shadingNetworksOption`;
+    }
+
+	userCleanUp_CleanUpSceneCallback( $parent, $doIt );
+}
+
+//
+//	reset the option values
+//
+global proc cleanUpSceneSetup(string $parent, int $forceFactorySettings)
+{
+	setOptionVars($forceFactorySettings);
+	
+	if (`checkBoxGrp -exists nurbsSrfOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query nurbsSrfOption`
+            nurbsSrfOption;
+	}
+	if (`checkBoxGrp -exists nurbsCrvOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query nurbsCrvOption`
+            nurbsCrvOption;
+	}
+	if (`checkBoxGrp -exists unusedNurbsSrfOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query unusedNurbsSrfOption`
+            unusedNurbsSrfOption;
+	}
+	if (`checkBoxGrp -exists deformerOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query deformerOption`
+            deformerOption;
+	}
+	if (`checkBoxGrp -exists unusedSkinInfsOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query unusedSkinInfsOption`
+            unusedSkinInfsOption;
+	}
+	if (`checkBoxGrp -exists clipOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query clipOption`
+            clipOption;
+	}
+	if (`checkBoxGrp -exists poseOption`) {
+		checkBoxGrp -edit
+            -value1 `optionVar -query poseOption`
+            poseOption;
+	}
+    if (`checkBoxGrp -exists expressionOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query expressionOption`
+            expressionOption;
+    }
+    if (`checkBoxGrp -exists groupIDnOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query groupIDnOption`
+            groupIDnOption;
+    }
+    if (`checkBoxGrp -exists animationCurveOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query animationCurveOption`
+            animationCurveOption;
+    }
+    if (`checkBoxGrp -exists shaderOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query shaderOption`
+            shaderOption;
+    }
+    if (`checkBoxGrp -exists cachedOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query cachedOption`
+            cachedOption;
+    }
+    if (`checkBoxGrp -exists transformOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query transformOption`
+            transformOption;
+    }
+    if (`checkBoxGrp -exists displayLayerOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query displayLayerOption`
+            displayLayerOption;
+    }
+    if (`checkBoxGrp -exists renderLayerOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query renderLayerOption`
+            renderLayerOption;
+    }
+    if (`checkBoxGrp -exists setsOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query setsOption`
+            setsOption;
+    }
+    if (`checkBoxGrp -exists partitionOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query partitionOption`
+            partitionOption;
+    }
+    if (`checkBoxGrp -exists locatorOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query locatorOption`
+            locatorOption;
+    }
+    if (`checkBoxGrp -exists ptConOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query ptConOption`
+            ptConOption;
+    }
+    if (`checkBoxGrp -exists pbOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query pbOption`
+            pbOption;
+    }
+    if (`checkBoxGrp -exists snapshotOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query snapshotOption`
+            snapshotOption;
+    }
+    if (`checkBoxGrp -exists unitConversionOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query unitConversionOption`
+            unitConversionOption;
+    }
+    if (`checkBoxGrp -exists referencedOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query referencedOption`
+            referencedOption;
+    }
+    if (`checkBoxGrp -exists brushOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query brushOption`
+            brushOption;
+    }
+    if (`checkBoxGrp -exists unknownNodesOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query unknownNodesOption`
+            unknownNodesOption;
+    }
+    if (`checkBoxGrp -exists shadingNetworksOption`) {
+        checkBoxGrp -edit
+            -value1 `optionVar -query shadingNetworksOption`
+            shadingNetworksOption;
+    }
+
+	userCleanUp_CleanUpSceneSetup( $parent, $forceFactorySettings );
+}
+
+
+//-------------------------------------------------
+
+//
+// Some Short delete procs.
+//
+
+proc int isNodeUsed(string $node, int $minVal)
+//
+// Description:
+//      Function to return whether a node is used in the scene.
+//
+// Arguments:
+//      node    Name of the node to test.
+//      minVal  Minimum number of connections the node must have to be
+//              considered used (ie. a node must have more than this
+//              number to be considered used.
+//
+// Returns:
+//      1   - the node is used by the scene
+//      0   - this node doesn't have enough connections, its unused.
+//
+//      cdt (March 2002)
+//
+{
+    int $isUsed = 1;
+
+    if ($node != "characterPartition") {
+	    // sometimes related nodes might delete others on the
+	    // list, so need to check if the node still exists.
+	    string $reallyExist[] = `ls $node`;
+	    
+        if (size($reallyExist) != 0) {
+            string $connectionList[] = `listConnections $node`;
+
+            if (size($connectionList) <= $minVal)
+            {
+                $isUsed = 0;
+            }
+        }
+    }
+
+    return $isUsed;
+}
+
+global proc int deleteUnusedCommon( string $typ, int $minVal, string $uiString )
+{
+	return deleteUnusedCommon_Multi( { $typ }, $minVal, $uiString );
+}
+
+global proc int deleteUnusedCommon_Multi( string $typ[], 
+									  int $minVal, 
+									  string $uiString)
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+	
+	string $lsCommand = ( "ls " );
+	string $t;
+	for( $t in $typ )
+	{
+		$lsCommand += ( " -typ " + $t );
+	}
+
+	int $numDeleted = 0;
+	int $i;
+    string $nodeList[] = eval($lsCommand);
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( size($nodeList), $uiString, 1 );
+	}
+
+    for ($i = 0; $i < size($nodeList); $i++) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress( $i ) )
+			{
+				break;
+			}
+		}
+
+        if (!isNodeUsed($nodeList[$i], $minVal)) {
+            $numDeleted += deleteIfNotReferenced( $nodeList[$i] );
+        }
+    }
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+
+//
+// Delete Unused Sets.
+//
+global proc int deleteUnusedSets()
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+	
+	string $sets[] = `ls -sets`;
+	int $numDeleted = 0;
+
+	if( $showProgress ) 
+	{
+		cleanUp_StartProgress( size($sets), (uiRes("m_cleanUpScene.kRemovingEmptySets2")), 1 );
+	}
+
+	int $i = 0;
+
+	for( $set in $sets ) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) break;
+		}
+
+		if( `objExists $set` )
+		{
+            if( `objectType $set` != "animLayer" ) // Prevent animLayer deletion because they do not respond well to the sets command and they should probably have there own cleaning option
+            {
+    			string $elements[] = `sets -q $set`;
+	    		if( `size $elements` < 1 ) {
+		    		if( $set != "defaultLightSet" && $set != "defaultObjectSet" &&
+			    		$set != "initialParticleSE" && $set != "initialShadingGroup" ) {
+    					$numDeleted += deleteIfNotReferenced( $set );
+                    }
+				}
+			}
+		}
+
+		$i++;
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+
+}
+
+//  ====================== deleteUnusedExpressions ======================
+//
+//  Creation Date:  March, 1999
+//
+//  Description:
+//    Deletes all expression nodes which have no direct connections 
+//  to any of their output attributes.  A unit node with nothing on 
+//  the other side is considered not to be a direct connection, i.e. it is
+//  skipped over.  Note we say "direct" connections.  An expression might 
+//  be part of a connected group of nodes which were cut off from the 
+//  rest of the scene, hence "not used," but this routine
+//  does not attempt to depth-search the network to detect such situations.
+// 
+//  This routine deletes only "expression" nodes, not dynExpressions.  
+//  dynExpressions are built into the particle shapes.
+//
+//  CAUTION: If you have an expression that executes Mel commands but
+//  has no output connections, this routine *will* delete it.  Use cautiously!
+//
+//  INPUT ARGUMENTS
+//      None.
+// 
+//  Return Value: 
+//      int $deleteCount = 
+//           number of expression nodes deleted
+//
+global proc int deleteUnusedExpressions() 
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+	
+	int $deletedCount = 0;
+
+	//  Get a list of all expression nodes.
+	//
+	string $nodeList[];
+	clear( $nodeList );
+	$nodeList = `ls -type expression`;
+
+	// Iterate through list of nodes
+	//
+	int $i;
+	int $nodeCount = size( $nodeList );
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( $nodeCount, (uiRes("m_cleanUpScene.kDeletingUnusedExpressions")), 1 );
+	}
+
+	for ($i = 0; $i  < $nodeCount; $i++)
+	{
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) break;
+		}
+	
+		// See if this node's "output" attribute has any
+		// outgoing connections.
+		//
+        string $outputs[];
+        clear( $outputs );
+        $outputs = `listConnections -source false -destination true -skipConversionNodes true ($nodeList[$i]+".output")`;
+        if( size( $outputs ) == 0 )		
+		{
+			if( deleteIfNotReferenced( $nodeList[$i] ) ) {
+				$deletedCount++;
+			}
+		}
+	}
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $deletedCount;						
+}
+
+
+global proc int deleteUnusedInUnusedHierarchy_Multi( string $typ[], int $minVal, 
+															 string $uiString )
+{
+	//	Are we being called during an Optimize Scene Size operation?
+	// 	If so, we need to display progress information.  This was done
+	//	as a global variable to avoid having to change the signature of
+	//	the proc, as that could break many scripts, both internal and
+	//	customer-written.
+	//
+	int $showProgress = cleanUp_ShouldReportProgress();
+	
+	int $numDeleted = 0;
+	string $lsCommand = ( "ls " );
+	string $t;
+	for( $t in $typ )
+	{
+		$lsCommand += ( " -typ " + $t );
+	}
+
+    string $nodeList[] = eval($lsCommand);
+    string $parents[];
+
+	if( $showProgress )
+	{
+		cleanUp_StartProgress( size($nodeList), $uiString, 1 );
+	}
+
+	int $i = 0;
+    for ($node in $nodeList) {
+
+		if( $showProgress )
+		{
+			if( cleanUp_SetProgress($i) ) break;
+		}
+
+        if (!isNodeUsed($node, $minVal)) {
+            // The shape is unused, check whether its parents are also unused.
+
+            int $isUsed = 0;
+
+            clear($parents); // reset, allParents() will append to list.
+            getAllParents($node, $parents);
+
+            for ($parent in $parents) {
+                if (isNodeUsed($parent, $minVal)) {
+                    // At least one of the parents is used, keep the shape.
+                    $isUsed = 1;
+                    break;
+                }
+            }
+
+            if (!$isUsed) {
+                $numDeleted += deleteIfNotReferenced( $node );
+            }
+        }
+
+		$i++;
+    }
+
+	if( $showProgress )
+	{
+		cleanUp_EndProgress();
+	}
+
+	return $numDeleted;
+}
+
+global proc int deleteUnusedInUnusedHierarchy(string $typ, int $minVal, string $uiString)
+//
+// Description:
+//      For each node of the specified type, delete it if it's unused and
+//      all it's parents are also unused. This will delete only those
+//      nodes of the specified type and will not the unused nodes in
+//      the hierarchy. For example, if all nodes in the hierarchy: "group1
+//      | group2 | curveShape1" are unused and typ is "curveShape"; only
+//      the "curveShape" node will be deleted.
+//
+// Notes:
+//      This method may be desireable over using deleteUnusedCommon in
+//      situations where shape nodes are being cleaned up. For example,
+//      even though a curve shape is unused we should still keep it in
+//      the scene because the user may be using it to assist in picking
+//      the hierarchy (BUG 163067).
+//
+//      cdt (March 2002)
+//
+{
+	return deleteUnusedInUnusedHierarchy_Multi( { $typ }, $minVal, $uiString );
+}
+
+global proc int deleteUnknownNodes()
+//
+// Description:
+//		Deletes all nodes of type unknown, unknownDag and unknownTransform
+//
+{
+	int $showProgress = cleanUp_ShouldReportProgress();
+	
+	int $deletedCount = 0;
+
+	//  Get a list of all unknown nodes.
+	//
+	string $nodeList[];
+	clear( $nodeList );
+	$nodeList = `ls -type unknown -type unknownDag -type unknownTransform`;
+
+	// Iterate through list of nodes
+	//
+	int $i;
+	int $nodeCount = size( $nodeList );
+
+	if( $showProgress ) {
+		cleanUp_StartProgress( $nodeCount, (uiRes("m_cleanUpScene.kDeletingUnknownNodes")), 1 );
+	}
+
+	for ($i = 0; $i  < $nodeCount; $i++)
+	{
+		if( $showProgress ) {
+			if( cleanUp_SetProgress($i) ) break;
+		}
+	
+		if( deleteIfNotReferenced( $nodeList[$i] ) ) {
+			$deletedCount++;
+		}
+	}
+
+	if( $showProgress ) {
+		cleanUp_EndProgress();
+	}
+
+	return $deletedCount;						
+}
+
+//==============Begin Support for individual optimization buttons==============
+//
+//	Added some routines to temporarily override the optionVar settings for the
+//	cleanUpScene operation to allow us to fire off each cleanup operation 
+//	individually.
+//
+//	Next to each optimization in the "Optimize Scene Size" dialog I've added
+//	a button "Optimize Now".  This button invokes scOpt_performOneCleanup()
+//	to temporarily disable all cleanup operations but that one, invokes
+//	the scene cleanup, then restores the optionVars to their previous state.
+//
+
+global proc string [] scOpt_allCleanUpOptionVars()
+{
+	string $optionVars[] = {
+		"nurbsSrfOption",
+		"nurbsCrvOption",
+		"unusedNurbsSrfOption",
+		"locatorOption",
+		"clipOption",
+		"poseOption",
+		"ptConOption",
+		"pbOption",
+		"deformerOption",
+		"unusedSkinInfsOption",		
+		"expressionOption",
+		"groupIDnOption",
+		"animationCurveOption",
+		"snapshotOption",
+		"unitConversionOption",
+		"shaderOption",
+		"cachedOption",
+		"transformOption",
+		"displayLayerOption",
+		"renderLayerOption",
+		"setsOption",
+		"partitionOption",
+		"referencedOption",
+		"brushOption",
+		"unknownNodesOption",
+		"shadingNetworksOption"
+	};
+
+	string $userCleanUps[] = userCleanUp_GetOptionVars();
+	for( $userCleanUp_OptVar in $userCleanUps )
+	{
+		$optionVars[size($optionVars)] = $userCleanUp_OptVar;
+	}
+	
+	return $optionVars;
+}
+
+global proc scOpt_saveAndClearOptionVars( int $clear )
+//
+//	Description:
+//
+//		If $clear=1, finds all option variables associated with scene 
+//		cleanup operations, zeroes them, and stores their previous values
+//		somewhere.  If $clear=0, then the proc restores the saved optionVar
+//		values.  This allows easy "pushing" and "popping" of these optionVar
+//		values.
+//
+//		In addition to the fixed set of built-in cleanup operations, the 
+//		function must also deal with user-defined cleanup operations that
+//		may have been added dynamically.
+//
+{
+	global string $gOptimizeSceneOptionVars[];
+
+	string $optionVars[] = scOpt_allCleanUpOptionVars();
+
+	int $numOptionVars = size($optionVars);
+
+	for( $i = 0; $i < $numOptionVars; $i++ )
+	{
+		if( $clear == 1 )
+		{
+			$gOptimizeSceneOptionVars[2*$i] = $optionVars[$i];
+			$gOptimizeSceneOptionVars[2*$i+1] = 
+				`optionVar -query $optionVars[$i]`;
+			optionVar -intValue $optionVars[$i] false;
+		}
+		else
+		{
+			int $val = $gOptimizeSceneOptionVars[2*$i+1];
+			optionVar -intValue $gOptimizeSceneOptionVars[2*$i] $val;
+		}
+	}
+}
+
+global proc scOpt_setOptionVars( string $which[] )
+{
+	for( $var in $which )
+	{
+		optionVar -intValue $var true;
+	}
+}
+
+global proc scOpt_performOneCleanup( string $which[] )
+{
+	scOpt_saveAndClearOptionVars(1);
+	scOpt_setOptionVars( $which );
+
+	cleanUpScene( 1 );
+
+	scOpt_saveAndClearOptionVars(0);
+}
+//
+//
+//=======End Support for individual optimization buttons=======================
+	
+
+
+//==============BEGIN Support for user-defined cleanup steps===================
+//
+//	We added some functions for users to be able to add their own scene cleanup
+//	operations to the list in the "Optimize Scene Size" options dialog.
+//
+//	Routines:
+//
+//		userCleanUp_AddCleanUp(): register a new user-defined cleanup operation.
+//								  (routine is actually in userCleanUp_AddCleanUp.mel).
+//
+//		userCleanUp_GetNumCleanUps(),
+//		userCleanUp_GetOptionVarName(),
+//		userCleanUp_GetDefaultValue(),
+//		userCleanUp_GetControlName(),
+//		userCleanUp_GetLabel(),
+//		userCleanUp_GetCommand(): retrieving attributes of user-defined cleanup 
+//								  operations
+//
+//		userCleanUp_ListCleanUps(): prints a list of all registered 
+//									user-defined cleanup operations.
+//
+//		userCleanUp_GetOptionVars(): lists all option variables for user-defined
+//									 cleanup operations.
+//
+//		userCleanUp_SetOptionVars(),
+//		userCleanUp_CleanUpSceneSetup(),
+//		userCleanUp_CleanUpSceneCallback(): functions for synchronizing option 
+//											vars with UI checkboxes for cleanup
+//											operations
+//
+//		userCleanUp_CreateUI(): builds the checkboxes for the user-defined 
+//								cleanup operations
+//
+//		userCleanUp_PerformCleanUpScene(): actually does the user-defined cleanup
+//										   operations.
+//
+//------------------------------------------------------------------------------
+
+global proc int userCleanUp_GetNumCleanUps()
+//
+//	Description:
+//
+//		Returns the number of user-defined cleanup operations
+//		that have been registered.  They are identified by
+//		number from 0..n-1.
+//
+{
+	global string $gUserSceneCleanUps[];
+	int $len = size($gUserSceneCleanUps)/4;
+	return $len;
+}
+
+global proc string userCleanUp_GetOptionVarName( int $cleanUpNum )
+//
+//	Description:
+//
+//		Returns the option variable associated with the specified
+//		user cleanup operation.  The value of this variable indicates
+//		whether or not that particular operation will be performed
+//		the next time an "Optimize Scene Size" operation is invoked.
+//
+{
+	global string $gUserSceneCleanUps[];
+	return ( "ucOptVar_" + $gUserSceneCleanUps[4*$cleanUpNum] );
+}
+
+global proc int userCleanUp_GetDefaultValue( int $cleanUpNum )
+//
+//	Description:
+//
+//		Returns the default value (on or off) of the specified
+//		user-defined cleanup operation.
+//
+{
+	global string $gUserSceneCleanUps[];
+	return $gUserSceneCleanUps[4*$cleanUpNum+2];
+}
+
+global proc string userCleanUp_GetControlName( int $cleanUpNum )
+//
+//	Description:
+//
+//		Returns the name of the checkBox control group in the
+//		Optimize Scene Size dialog that is associated with the 
+//		specified user cleanup operation.  The state of this
+//		checkbox and the corresponding option variable (see
+//		userCleanUp_GetOptionVarName()) are synchronized when
+//		that dialog is created or destroyed.
+//
+{
+	global string $gUserSceneCleanUps[];
+	return ( "uc_Ctl" + $gUserSceneCleanUps[4*$cleanUpNum] );
+}
+
+global proc string userCleanUp_GetLabel( int $cleanUpNum )
+//
+//	Description:
+//
+//		Returns the text that should be used to label the
+//		specified user-defined cleanup operation in the
+//		Optimize Scene Size dialog.
+//
+{
+	global string $gUserSceneCleanUps[];
+	return ( $gUserSceneCleanUps[4*$cleanUpNum+1] );
+}
+
+global proc string userCleanUp_GetCommand( int $cleanUpNum )
+//
+//	Description:
+//
+//		Returns the command string that should be executed to
+//		perform the specified user-defined cleanup operation.
+//
+{
+	global string $gUserSceneCleanUps[];
+	return ( $gUserSceneCleanUps[4*$cleanUpNum+3] );
+}
+
+global proc userCleanUp_ListCleanUps()
+//
+//	Description:
+//
+//		Returns the command string that should be executed to
+//		perform the specified user-defined cleanup operation.
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+
+	string $userDefinedFmt = (uiRes("m_cleanUpScene.kUserDefined"));
+	string $nameFmt = (uiRes("m_cleanUpScene.kName"));
+	string $commandFmt = (uiRes("m_cleanUpScene.kCommand"));
+	string $defaultFmt = (uiRes("m_cleanUpScene.kDefault"));
+	string $optionFmt = (uiRes("m_cleanUpScene.kOptionvar"));
+	string $controlFmt = (uiRes("m_cleanUpScene.kControl"));
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $label = userCleanUp_GetLabel($i);
+		string $cmd = userCleanUp_GetCommand($i);
+		int $def = userCleanUp_GetDefaultValue($i);
+		string $control = userCleanUp_GetControlName($i);
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+
+		print `format -s ($i+1) $userDefinedFmt`;
+		print "--------------------------------\n";
+
+		print `format -s $label $nameFmt`;
+		print `format -s $cmd $commandFmt`;
+		print `format -s $def $defaultFmt`;
+		print `format -s $optionVarName $optionFmt`;
+		print `format -s $control $controlFmt`;
+	}
+}
+
+global proc string[] userCleanUp_GetOptionVars()
+//
+//	Description:
+//
+//		Returns a list of all option variables associated
+//		with user-defined cleanup operations.
+//
+{
+	string $res[] = {};
+	int $num = userCleanUp_GetNumCleanUps();
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		$res[size($res)] = $optionVarName;
+	}
+
+	return $res;
+}
+
+global proc userCleanUp_SetOptionVars( int $forceFactorySettings )
+//
+//	Description:
+//
+//		Called when the option variables for cleanup operations are
+//		either being initialized from scratch (at startup), or 
+//		reset to factory settings.  We simply retrieve the appropriate
+//		default values and set the option variables accordingly.
+//
+//		This routine is called from setOptionVars() below.
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		string $defaultValue = userCleanUp_GetDefaultValue($i);
+
+		if ($forceFactorySettings || !`optionVar -exists $optionVarName`)
+		{
+			int $defaultInt = $defaultValue;
+			optionVar -intValue $optionVarName $defaultInt;
+		}
+	}
+}
+
+global proc userCleanUp_CleanUpSceneSetup( string $parent, 
+										   string $forceFactorySettings )
+//
+//	Description:
+//
+//		Called when the Optimize Scene Size dialog is created, to
+//		synchronize the check boxes in that dialog with the values
+//		of the corresponding optionVars.
+//
+//		This routine is called from cleanUpSceneSetup() below.
+//
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		string $controlName = userCleanUp_GetControlName($i);
+
+		if( `checkBoxGrp -exists $controlName` )
+		{
+			checkBoxGrp -edit -value1 `optionVar -query $optionVarName` $controlName;
+		}
+	}
+}
+
+global proc userCleanUp_CleanUpSceneCallback( string $parent, string $doIt )
+//
+//	Description:
+//
+//		Called when the current state of the checkboxes in the Optimize
+//		Scene Size dialog needs to be saved to option variables.
+//
+//		This routine is called from cleanUpSceneCallback() below.
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		string $controlName = userCleanUp_GetControlName($i);
+
+		optionVar -intValue $optionVarName 
+				  `checkBoxGrp -query -value1 $controlName`;
+	}
+}
+
+global proc userCleanUp_CreateUI()
+//
+//	Description:
+//
+//		Called to create the UI for user-defined cleanup operations.  
+//		Each operation's UI consists of a checkbox to enable/disable the 
+//		operation, and an "Optimize Now" button that can be used to execute 
+//		just that operation.
+//
+//		This function is called from createCleanUpSceneTabUI() below.
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+
+	int $useHeight = 18;
+	
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		string $controlName = userCleanUp_GetControlName($i);
+		string $labelName = userCleanUp_GetLabel($i);
+		string $cmd = ( "scOpt_performOneCleanup( { \"" + $optionVarName + "\" } )" );
+
+		rowLayout -nc 2 -cat 2 "left" 0 -cw 1 300 -cw 2 200;
+
+		if( $i == 0 ) 
+		{
+			checkBoxGrp -ncb 1 -label (uiRes("m_cleanUpScene.kCustomOptimizers"))  -label1 $labelName $controlName;
+		}
+		else
+		{
+			checkBoxGrp -ncb 1 -label1 $labelName $controlName;
+		}
+
+		button -label (uiRes("m_cleanUpScene.kOptimizeNowMain"))  
+			-height $useHeight 
+			-c $cmd;			
+
+		setParent ..;
+	}
+}
+
+global proc int userCleanUp_PerformCleanUpScene()
+//
+//	Description:
+//
+//		Called to actually perform the optimize scene operations
+//		that are currently enabled (via their optionVars).
+//
+//		This function is called from performCleanUpScene() below.
+//		Returns the number of errors (if any) that occurred when
+//		invoking the operation.
+//
+{
+	int $num = userCleanUp_GetNumCleanUps();
+	int $errorCount = 0;
+
+	for( $i = 0; $i < $num; $i++ )
+	{
+		string $optionVarName = userCleanUp_GetOptionVarName($i);
+		string $cmd = userCleanUp_GetCommand($i);
+
+		if( `optionVar -query $optionVarName` && cleanUp_CheckInterrupt() )
+		{
+			$errorCount += catch( eval( $cmd ) );
+		}
+	}
+	
+	return $errorCount;
+}
+
+//
+//
+//==============END support for user-defined cleanup operations================

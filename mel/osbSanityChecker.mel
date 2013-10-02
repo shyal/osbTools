@@ -1,0 +1,34 @@
+loadPlugin "osbTools-1.0";
+
+source "osbSanityCheckerAPI.mel";
+source "cleanUpScene.mel"; // overridden to remove a confirm dialog
+
+source "checks/geo/osbSanityBorders.mel";
+source "checks/geo/osbSanityHolesBorder.mel";
+source "checks/geo/osbSanityZeroLengthEdges.mel";
+source "checks/geo/osbSanityMoreThanFourEdges.mel";
+source "checks/geo/osbSanityNonManifoldFaces.mel";
+source "checks/geo/osbSanityLaminaFaces.mel";
+source "checks/geo/osbSanityDeleteShadersApplyLambert.mel";
+source "checks/geo/osbSanityWarnRefMaterial.mel";
+source "checks/geo/osbSanity11EdgesAtOnePoint.mel";
+source "checks/geo/osbSanityNormals.mel";
+source "checks/geo/osbSanityDeleteHistory.mel";
+
+source "checks/transform/osbSanityFreezTransforms.mel";
+source "checks/transform/osbSanityTopGroupNodeToZero.mel";
+source "checks/transform/osbSanityGeoAtZero.mel";
+
+source "checks/naming/osbSanityNumberPadding.mel";
+source "checks/naming/osbSanityNameEndings.mel";
+
+source "checks/uv/osbSanityUVBorders.mel";
+source "checks/uv/osbSanityUVOverlapping.mel";
+source "checks/uv/osbSanityUVShellsOverlapping.mel";
+source "checks/uv/osbSanityUVsReversed.mel";
+source "checks/uv/osbSanityUVsInRightGrid.mel";
+source "checks/geo/osbSanityDeleteLayersAndDagNodes.mel";
+
+source "osbUserChecks.mel";
+
+buildSanityCheckUI();

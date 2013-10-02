@@ -1,0 +1,21 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(		"osbSanityWarnRefMaterial",
+						"GEO CHECK",
+						"Give warning if reference geo is in scene",
+						"This checks whether there are any maya references\n\
+left in the scene.",
+						"Perform");
+
+// Give warning if reference geo is in scene
+global proc osbSanityWarnRefMaterial()
+{
+	string $refs[] = ls("-referencedNodes");
+	if (size($refs) > 0)
+	{
+		confirmDialog 
+			-title ("Referenced nodes") 
+			-message ("Warning this scene contains referenced geometry")  
+			-button "OK"; 
+	}
+}

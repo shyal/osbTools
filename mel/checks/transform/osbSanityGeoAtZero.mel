@@ -1,0 +1,23 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityGeoAtZero",
+					"TRANSFORM CHECK",
+					"no geo below -0.005 in Y",
+					"This check ensures that no geometry's bounding box is below -0.005",
+					"Perform,Select,fix");
+					
+global proc osbSanityGeoAtZero()
+{
+	string $sl[] = getObjectsBasedOnPrefs();
+	
+	string $obj[];
+	
+	for ($s in $sl)
+	{
+    	float $bb[] = polyEvaluate("-b", $s);
+
+    	if ($bb[2] < -0.005)
+        	$obj[size($obj)] = $s;
+	}
+	select $obj;
+}

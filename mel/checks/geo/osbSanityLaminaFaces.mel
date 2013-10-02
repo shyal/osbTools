@@ -1,0 +1,22 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityLaminaFaces",
+					"GEO CHECK",
+					"No lamina faces",
+					"Lamina Faces are faces that share the same edges (and thus the same vertices).\n\
+You can think of Lamina Faces as unnecessary faces that sit right on top of each other.\n\
+Objects with Lamina Faces will still render fine, but render time is likely to increase\n\
+as the renderer will compute Lamina Faces twice. Any smooth operation will produce\n\
+strange looking results and a SubD conversion will report a Nonmanifold error.\n\
+Lamina faces usually occur when you merge vertices on faces that share the same space.",
+					"Perform,Select,fix");
+
+global proc osbSanityLaminaFaces()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"2","1","0","0","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","-1","1" };
+}
+
+global proc osbSanityLaminaFacesFix()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"1","1","0","0","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","-2","1" };
+}

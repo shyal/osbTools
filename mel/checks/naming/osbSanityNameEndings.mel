@@ -1,0 +1,44 @@
+source "osbSanityCheckerAPI.mel";
+
+if (!pluginInfo("-q", "-loaded", "osbTools-1.0"))
+    loadPlugin "osbTools-1.0";
+
+osbAddSanityCheck(	"rwmPerformRenamingWithOptions",
+					"NAMING CONVENSIONS",
+					"Check that all geo and group nodes end in _GEO/_PLY/_GRP",
+					"This checks that all nodes ends in _GEO/_PLY/_GRP\n\
+if they are polygons with subd attributes, polygons, or groups, respectively.",
+					"Perform");
+
+global proc rwmPerformRenamingWithOptionsCallback()
+{
+    int $grp = checkBox("-q", "-value", "osbGrpCB");
+    int $force = checkBox("-q", "-value", "osbForceCB");
+    int $plygeo = radioButtonGrp("-q", "-select", "osbPlyGeoRadio");
+    
+	int $runOnAll = osbGetRunOnAllObjects();
+
+	print ($plygeo);
+
+    osbTypeRename( $grp ? "grp" : "nogrp", $plygeo == 1 ? "ply" : $plygeo == 2 ? "geo" : "", $runOnAll ? "all" : "selection", $force);
+}
+
+global proc rwmPerformRenamingWithOptions()
+{
+	string $window = "osbSceneRenaming";
+	if (window("-exists", $window))
+    	deleteUI($window);
+	window("-title", "osb Sanity Checking Tool", "-resizeToFitChildren", 1, "-menuBar", false, $window);
+
+	columnLayout -columnAlign "center" -cw 450;
+	checkBox -label "_GRP" "osbGrpCB";
+    radioButtonGrp -numberOfRadioButtons 2 -labelArray2 "_PLY" "_GEO" "osbPlyGeoRadio";
+	rowLayout -nc 2;
+	button -label "perform" -command "rwmPerformRenamingWithOptionsCallback()";
+	checkBox -label "force _PLY|_GEO" "osbForceCB";
+	setParent ..;
+	setParent ..;
+    showWindow($window);
+
+	window("-e", "-width", 150, "-height", 70, $window);
+}

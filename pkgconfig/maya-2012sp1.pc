@@ -1,0 +1,10 @@
+prefix=/apps/autodesk/maya2012
+exec_prefix=${prefix}
+includedir=${prefix}/include
+libdir=${exec_prefix}/lib
+
+Name: maya
+Description: Maya libraries
+Version: 2012
+Cflags: -I${includedir} -D_BOOL -DREQUIRE_IOSTREAM -DLINUX -fPIC
+Libs: -L${libdir} -lOpenMaya -lOpenMayaUI -lOpenMayaAnim

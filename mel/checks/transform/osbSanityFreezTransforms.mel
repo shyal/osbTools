@@ -1,0 +1,21 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityFreezTransforms",
+					"TRANSFORM CHECK",
+					"Freeze transforms",
+					"Freezes all transform nodes in the scene",
+					"Perform");
+
+global proc osbSanityFreezTransforms()
+{
+
+	string $sl[];
+	
+	if (osbGetRunOnAllObjects())
+		$sl = ls("-exactType","transform");
+	else
+		$sl = ls("-sl");
+
+	for ($s in $sl)
+		makeIdentity -apply true -t 1 -r 1 -s 1 -n 0 $s;
+}

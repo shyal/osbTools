@@ -1,0 +1,16 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityUVBorders",
+					"UV CHECKING",
+					"Check there are no open UV seams",
+					"This checks there are no seams within a UV shell.\n\
+A seam is when two UV edges are perfectly adjacent.",
+					"Perform,Select,fix");
+
+global proc osbSanityUVBorders()
+{
+	string $meshes[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $meshes)
+    	UVSeams($s);
+}

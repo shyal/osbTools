@@ -1,0 +1,20 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityUVShellsOverlapping",
+					"UV CHECKING",
+					"Check no UVs/ UV shells are overlapping each other",
+					"UV Shells should not overlap since they'll inherit the same texture pixels if they do.\n\
+This check makes sure no shells within the same object overlap.",
+					"Perform,Select,fix");
+
+global proc osbSanityUVShellsOverlapping()
+{
+	string $meshes[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $meshes)
+	{
+    	int $overlapping = OverlappingUVShells($s);
+    	if ($overlapping == 1)
+        	select -add $s;
+	}
+}

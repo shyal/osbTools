@@ -1,0 +1,54 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityDeleteLayersAndDagNodes",
+					"SCENE CHECK",
+					"Delete layers/unimportant DAG nodes",
+					"This check deletes as much redundant DAG nodes as possible,\n\
+in essence everything that can get deleted without\n\
+affecting the scene visually or behaviourally",
+					"Perform");
+
+// Checking tool: Delete Layers/Unimportant DAG Nodes
+global proc osbSanityDeleteLayersAndDagNodes()
+{
+	performCleanUpSceneForEverything();
+
+	for ($s in `ls -exactType objectSet`)
+	{
+    	if ($s != "defaultLightSet" && $s != "defaultObjectSet")
+		{
+			delete $s;
+		}
+	}
+
+	for ($s in `ls -exactType displayLayer`)
+	{
+    	if ($s != "defaultLayer")
+		{
+			delete $s;
+		}
+	}
+
+	for ($s in `ls -exactType renderLayer`)
+	{
+    	if ($s != "defaultRenderLayer")
+		{
+			delete $s;
+		}
+	}
+		
+	string $exactType[] = {"brush", "ikRPsolver", "ikSCsolver", "ikSplineSolver"};
+	
+	for ($t in $exactType)
+	{
+    	string $brushes[] = `ls -exactType $t`;
+    	for ($s in $brushes)
+        	delete $s;
+    }
+	
+	deleteEmptyLayers("Display");
+	deleteEmptyLayers("Render");
+
+	if( size(`getenv "MAYA_TESTING_CLEANUP"`) == 0 )
+		print "You can be rid of the warning dialog box can setting the MAYA_TESTING_CLEANUP environment variable to 1 e.g adding export MAYA_TESTING_CLEANUP=1; to your .bashrc file in linux\n";
+}

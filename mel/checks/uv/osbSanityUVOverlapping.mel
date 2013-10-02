@@ -1,0 +1,49 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityUVOverlapping",
+					"UV CHECKING",
+					"Check no UV edges are overlapping a tile border",
+					"Check that no UVs are overlapping a tile border\n\
+This is important as all the UVs per object\n\
+need to fit within one grid tile.",
+					"Perform,Select,fix");
+
+// Check no UV edges are overlapping a tile border
+global proc osbSanityUVOverlapping()
+{
+	float $threshold = 0.001;
+	string $meshes[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $meshes)
+	{
+    	int $i;
+    	int $n[] = polyEvaluate("-uv", $s);
+		
+		float $centroidx = 0;
+		float $centroidy= 0;
+		
+		float $maxx = -1e6;
+		float $maxy = -1e6;
+		float $minx = 1e6;
+		float $miny = 1e6;
+		
+    	for ($i = 0; $i < $n[0]; $i++)
+    	{
+        	float $p[] = polyEditUV("-q", $s+".map["+$i+"]");
+			$centroidx += $p[0];
+			$centroidy += $p[1];
+			if ($p[0] > $maxx) $maxx = $p[0];
+			if ($p[1] > $maxy) $maxy = $p[1];
+			if ($p[0] < $minx) $minx = $p[0];
+			if ($p[1] < $miny) $miny = $p[1];
+    	}
+		$centroidx /= $n[0];
+		$centroidy /= $n[0];
+		
+		int $quadrantx = floor($centroidx);
+		int $quadranty = floor($centroidy);
+		
+		if ($minx - $quadrantx < $threshold || $miny - $quadranty < $threshold || $maxx - ($quadrantx+1) > $threshold || $maxy - ($quadranty+1) > $threshold)
+			select -add $s;
+	}
+}

@@ -1,0 +1,18 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityMoreThanFourEdges",
+					"GEO CHECK",
+					"No more than four sided polys",
+					"Makes sure that no polygonal face has more than 4 edges.\n\
+The Fix is performed by triangulating offending faces.",
+					"Perform,Select,fix");
+
+global proc osbSanityMoreThanFourEdges()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"2","1","0","1","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","-2","0" };
+}
+
+global proc osbSanityMoreThanFourEdgesFix()
+{
+	polyCleanupArgList 3 { (string)osbGetRunOnAllObjects(),"1","1","0","1","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","-1","0" };
+}

@@ -1,0 +1,16 @@
+source "osbSanityCheckerAPI.mel";
+
+osbAddSanityCheck(	"osbSanityUVsReversed",
+					"UV CHECKING",
+					"Check no UVs are reversed/inverted (like poly normals)",
+					"This checks that no UVs are facing down, to make sure\n\
+textures don't show up inverted.",
+					"Perform,Select,fix");
+
+global proc osbSanityUVsReversed()
+{
+	string $meshes[] = getObjectsBasedOnPrefs();
+	select -cl;
+	for ($s in $meshes)
+    	UVReversed($s);
+}

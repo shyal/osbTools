@@ -1,0 +1,58 @@
+source "osbSanityCheckerAPI.mel";
+
+if (pluginInfo("-q", "-l", "ResolveDuplicates.py"))
+{
+	flushUndo();
+	unloadPlugin "ResolveDuplicates.py";
+}
+
+if (pluginInfo("-q", "-l", "InheritParentsName.py"))
+{
+	flushUndo();
+	unloadPlugin "InheritParentsName.py";
+}
+
+loadPlugin "ResolveDuplicates.py";
+loadPlugin "InheritParentsName.py";
+
+if (!pluginInfo("-q", "-l", "-loaded", "osbTools-1.0"))
+    loadPlugin "osbTools-1.0";
+	
+osbAddSanityCheck(	"rwmPerformPaddingWithOptions",
+					"NAMING CONVENSIONS",
+					"Check that all geo and group nodes have a number padding",
+					"This makes all meshes inherit the name of their parent group.\n\
+It also numbers each object based on it's order in each particular group.",
+					"Perform");
+
+global proc rwmPerformPaddingWithOptionsCallback()
+{
+    int $inheritParentName = checkBox("-q", "-value", "inheritParentName");
+    int $resolveDuplicates = checkBox("-q", "-value", "resolveDuplicates");
+    
+	int $runOnAll = osbGetRunOnAllObjects();
+
+	if ($inheritParentName)
+	    newtonInheritParentsName();
+		
+	if ($resolveDuplicates)
+	    newtonResolveDuplicates();
+}
+
+global proc rwmPerformPaddingWithOptions()
+{
+	string $window = "osbSceneRenaming";
+	if (window("-exists", $window))
+    	deleteUI($window);
+	window("-title", "osb Sanity Checking Tool", "-resizeToFitChildren", 1, "-menuBar", false, $window);
+
+	columnLayout -columnAlign "center" -cw 450;
+	checkBox -label "Inherit Parent's Name" "inheritParentName";
+	checkBox -label "Resolve Duplicates and padding" "resolveDuplicates";
+
+	button -label "perform" -command "rwmPerformPaddingWithOptionsCallback()";
+	
+    showWindow($window);
+
+	window("-e", "-width", 300, "-height", 150, $window);
+}
