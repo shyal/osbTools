@@ -52,19 +52,25 @@ This check looks for open borders in polygon shells and the fix closes them. Thi
 
 This check looks for open borders in polygon shells and adds an edge loop to their border.
 
-[[File:osbSanitySplitBorders.png]]
+
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/OsbSanitySplitBorders.png)
+
 
 ### Floating vertex/zero edge length
 
 This checks for edges whose two vertices are less than 1e-05 units apart.
 
-[[File:osbSanityZeroLengthEdge.png]]
+
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/OsbSanityZeroLengthEdge.png)
+
 
 ### No more than four sided polys
 
 Makes sure that no polygonal faces have more than 4 edges. The Fix is performed by triangulating offending faces. This is a default maya test.
 
-[[File:osbSanityFourSidedPolies.png]]
+
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/OsbSanityFourSidedPolies.png)
+
 
 ### No non maniforld faces
 
