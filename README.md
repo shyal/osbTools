@@ -1,62 +1,48 @@
-osbTools
-========
-
-==== Overview ====
+# Overview
 
 The Sanity Checking Tool performs sanity checks at the modeling phase. It acts as a user interface, is very easily extensible (see Adding User Checks) and can be called programmatically through other tools (such as publishing tools) to automatically check the sanity of assets before publish.
 
-[[File:sanityChecker.png]]
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/SanityChecker.png)
 
-==== Repository ====
-
-http://git1/cgit/osbTools/
-
-==== Dependencies ====
+#### Dependencies
 
 osbTools contains MEL, Python and C++. It is also dependent on boost 1.47.0.
 
-==== Invoking ====
+#### Invoking
 
 From Maya command line:
 
-    source "osbSanityChecker.mel";
+```
+source "osbSanityChecker.mel";
+```
 
-Or from the modelling shelf:
-
-[[File:OsbSanityShelf.png]]
-
-==== Check types ====
+#### Check types
 
 There are various types of checks:
 
-* Perform
+* Perform: This is a one step check which performs its duties in a single click.
 
-This is a one step check which performs its duties in a single click.
+* Check, Select: This type of check is for information purposes only, it will detect a defect in the and enable the user to select the problematic components.
 
-* Check, Select
+* Check, Select, Fix: This is a 3 step check which enables the user to run a test, select the problematic components, and fix them.
 
-This type of check is for information purposes only, it will detect a defect in the and enable the user to select the problematic components.
+#### Scope
 
-* Check, Select, Fix
-
-This is a 3 step check which enables the user to run a test, select the problematic components, and fix them.
-
-==== Scope ====
-
-[[File:osbSanityRunOnAllGeo.png]]
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/osbSanityRunOnAllGeo.png)
 
 When '''edit > Run on all geo''' is checked, the checks will be run on the whole scene. When it is unchecked the checks will run on the selected geometry only.
 
-==== Modularity ====
+#### Modularity
 
 Ticking the check-boxes to the left of the checks, then click '''edit > hide checked items''' will hide selected items from the window. This enables to only work with UV tests for example. This combined with the ability to add your own checks means users can use this as a framework to add their own checks and make the tool their own.
 
-[[File:osbSanityModularity.png]]
+![](https://raw.githubusercontent.com/shyal/osbTools/master/docs/images/OsbSanityModularity.png)
 
 To unhide hidden checks, simply click '''edit > reset'''.
 
-== Geo Checks ==
-=== Open edges / Border edge===
+## Geo Checks
+
+### Open edges / Border edge ###
 
 This check looks for open borders in polygon shells and the fix closes them. This is a default Maya test.
 
@@ -90,10 +76,9 @@ Fixes non-manifold geometry, this is default maya functionality. For more inform
 
 This is a default maya test. From the maya documentation:
 
-"Lamina faces share all of their edges. When you select Lamina Faces for removal, Maya removes faces that share all edges. By removing these types of faces, you can avoid unnecessary processing time, especially when you export the model to a game console.
-For example, suppose you performed Edit Mesh > Duplicate Face with the Separate Duplicate Faces option turned off. You would have two faces on top of each other. If you later merge the vertices of the two faces, they would share the same edges. You can remove the extra face using Cleanup with Lamina faces turned on."
+"Lamina faces share all of their edges. When you select Lamina Faces for removal, Maya removes faces that share all edges. By removing these types of faces, you can avoid unnecessary processing time, especially when you export the model to a game console. For example, suppose you performed Edit Mesh > Duplicate Face with the Separate Duplicate Faces option turned off. You would have two faces on top of each other. If you later merge the vertices of the two faces, they would share the same edges. You can remove the extra face using Cleanup with Lamina faces turned on."
 
-===Delete shaders  assign lambert1 shader===
+===Delete shaders assign lambert1 shader===
 
 This check deletes all shaders in the scene and applies the default lambert material to all polygonal geometry
 
@@ -117,8 +102,7 @@ This checks whether the normals for the object are facing 'outwards'. It uses a 
 
 This check deletes history on all nodes.
 
-== Transform Checks ==
-===Freeze transforms===
+== Transform Checks == ===Freeze transforms===
 
 This check freezes all transform nodes in the scene.
 
@@ -132,8 +116,7 @@ This places the top level group node's pivot at world (0,0,0). This check will n
 
 This check ensures that no geometry's bounding box is below -0.005
 
-== Naming Conventions ==
-===Check that all geo and group nodes have a number padding===
+== Naming Conventions == ===Check that all geo and group nodes have a number padding===
 
 [[File:osbSanityNumberPadding.png]]
 
@@ -159,8 +142,7 @@ Checking '''_PLY''' or '''_GEO''' will add either of those suffixes at the end o
 
 [[File:osbSanityGRPGEO.png]]
 
-== UV Checking ==
-===Check there are no open UV seams===
+== UV Checking == ===Check there are no open UV seams===
 
 [[File:osbSanityUVSeams.png]]
 
@@ -192,50 +174,43 @@ Make sure UVs are only in the positive areas of the UV grid.
 
 [[File:osbSanityUVsInRightQuarter.png]]
 
-== Scene Check ==
-===Delete layers/unimportant DAG nodes===
+== Scene Check == ===Delete layers/unimportant DAG nodes===
 
 This check deletes the defaultLightSet, the defaultObjectSet, displayLayers, defaultLayers, defaultRenderLayers, brushs ikRPsolvers, ikSCsolvers, ikSplineSolvers, DisplayLayers and RenderLayers
 
 == Adding User Checks ==
 
-
-The sanity checker is a simple API allowing you to easily add your
-own checks.
+The sanity checker is a simple API allowing you to easily add your own checks.
 
 You can either put your own checks in osbUserChecks.mel directly, or put them in seperate mel files and source those files from osbUserChecks.mel
 
 Your checks should start with:
 
-source "osbSanityCheckerAPI.mel"; 
+source "osbSanityCheckerAPI.mel";
 
 The registration command is:
 
-    osbAddSanityCheck("exampleCheckName",
-        "Example Category Name",
-        "Example label - this name appears in the UI",
-        "Example Tooltip - this help shows up when hovering over the check in the UI",
-        "Perform");
-
+osbAddSanityCheck("exampleCheckName",
+    "Example Category Name",
+    "Example label - this name appears in the UI",
+    "Example Tooltip - this help shows up when hovering over the check in the UI",
+    "Perform");
 The last string can either be "Perform" or "Perform,Select,fix". A "Perform" check will do all that is required in one function. For this check you'll need to declare and define a global function that has the same name as the first argument, so:
 
-    global proc exampleCheckName() 
-    {
-        // checking code here
-    }
-
+global proc exampleCheckName() 
+{
+    // checking code here
+}
 The function signature contains no arguments and the function has no return value. Within the function, you can assume that the correct objects that you want to check are currently selected.
 
 The second kind of check is "Perform,Select,fix". For this type of check, the objects / components which remain selected when exampleCheckName() returns are the objects that will get added to the selection set which flags them as being problematic.
 
-    global proc exampleCheckNameFix() 
-    {
-        // fixing code here
-    }
-
+global proc exampleCheckNameFix() 
+{
+    // fixing code here
+}
 Once again, in this function, you can assume that the problematic objects / components that you want to fix are currently selected.
 
 Your best option to get up to running is to take a look at existing checks inside the 'checks' directory.
 
-If the checks that you add are used a lot please feel free to add them to the main tool and check your changes into the newton repos in bitbucket.
-Please also note that existing checks can be hidding by using edit > Hide selected checks, go ahead and hide checks that you do not use, and implement your own checks to make this tool your own.
+If the checks that you add are used a lot please feel free to add them to the main tool and check your changes into the newton repos in bitbucket. Please also note that existing checks can be hidding by using edit > Hide selected checks, go ahead and hide checks that you do not use, and implement your own checks to make this tool your own.
