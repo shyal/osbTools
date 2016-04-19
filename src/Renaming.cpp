@@ -180,7 +180,7 @@ MStatus TypeRename::doIt(const MArgList& args)
 			bool isPly = std::string::npos != namestr.find("_PLY");
 			bool isGeo = std::string::npos != namestr.find("_GEO");
 
-			if (isGeo or isPly)
+			if (isGeo || isPly)
 			{
 				if (force)
 				{
