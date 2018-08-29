@@ -15,8 +15,8 @@ if (pluginInfo("-q", "-l", "InheritParentsName.py"))
 loadPlugin "ResolveDuplicates.py";
 loadPlugin "InheritParentsName.py";
 
-if (!pluginInfo("-q", "-l", "-loaded", "osbTools-1.0"))
-    loadPlugin "osbTools-1.0";
+if (!pluginInfo("-q", "-l", "-loaded", "osbTools"))
+    loadPlugin "osbTools";
 	
 osbAddSanityCheck(	"rwmPerformPaddingWithOptions",
 					"NAMING CONVENSIONS",

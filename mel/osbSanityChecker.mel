@@ -1,4 +1,4 @@
-loadPlugin "osbTools-1.0";
+loadPlugin "osbTools";
 
 source "osbSanityCheckerAPI.mel";
 source "cleanUpScene.mel"; // overridden to remove a confirm dialog
