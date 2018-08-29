@@ -1,7 +1,7 @@
 source "osbSanityCheckerAPI.mel";
 
-if (!pluginInfo("-q", "-loaded", "osbTools-1.0"))
-    loadPlugin "osbTools-1.0";
+if (!pluginInfo("-q", "-loaded", "osbTools"))
+    loadPlugin "osbTools";
 	
 osbAddSanityCheck(	"osbNameClashes",
 					"NAMING CONVENSIONS",

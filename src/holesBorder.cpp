@@ -172,9 +172,9 @@ MStatus holesBorder::doIt(const MArgList& args)
 				stat = ite.getLength(edgeLength[j], MSpace::kWorld);er
 			}
 			
-			double maxDist = *max_element(edgeLength.begin(), edgeLength.end());
+			auto const maxDist = max_element(edgeLength.begin(), edgeLength.end());
 						
-			if (fabs(maxDist - threshold) > 0.05)
+			if ((maxDist != edgeLength.end()) && (fabs(*maxDist - threshold) > 0.05))
 			{
 				stringstream ss;
 				ss << "polySplit ";
