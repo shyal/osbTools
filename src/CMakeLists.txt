@@ -25,14 +25,24 @@ include_directories(${MAYA_INCLUDE_DIR} ${Boost_INCLUDE_DIR})
 link_directories(${MAYA_LIBRARY_DIR})
 
 add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES})
-#target_link_libraries(${PROJECT_NAME} ${MAYA_LIBRARIES})
 
-set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
+if (WIN32)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        LINK_FLAGS "/export:initializePlugin /export:uninitializePlugin")
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PREFIX ""
+        SUFFIX ".mll")
+elseif(APPLE)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PREFIX ""
+        SUFFIX ".bundle")
+else()
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        PREFIX ""
+        SUFFIX ".so")
+endif()
 
-target_link_libraries(${PROJECT_NAME}
-    ${MAYA_OpenMaya_LIBRARY}
-    ${MAYA_OpenMayaUI_LIBRARY}
-    ${MAYA_OpenMayaAnim_LIBRARY})
+target_link_libraries(${PROJECT_NAME} ${MAYA_LIBRARIES})
 
 if (WIN32)
     install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION plug-ins)
